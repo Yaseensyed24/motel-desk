@@ -182,7 +182,7 @@ function roomCards() {
 
 function departureList(bookings) {
   if (!bookings.length) return '<div class="empty">No departures scheduled for today.</div>';
-  return `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room</th><th>Out</th></tr></thead><tbody>${bookings.sort((a, b) => a.end.localeCompare(b.end)).map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || guest(db, booking)?.idNumber || '')}</small></button></td><td><span class="room-label">${esc(currentRoom(booking))}</span></td><td>${esc(booking.end.slice(11, 16))}</td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room</th><th>Out</th></tr></thead><tbody>${bookings.sort((a, b) => a.end.localeCompare(b.end)).map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || guest(db, booking)?.idNumber || '')}</small></button></td><td><span class="room-label">${esc(currentRoom(booking) || `${booking.type === 'one' ? '1 bed' : '2 beds'} · unassigned`)}</span></td><td>${esc(booking.end.slice(11, 16))}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 function roomBoardPage() {
@@ -191,7 +191,7 @@ function roomBoardPage() {
 
 function reservationsPage() {
   const items = reservations();
-  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Plan ahead</div><h1>Reservations</h1><p class="subtitle">Reserve a manually entered room and check the guest in when they arrive.</p></div><div class="actions">${btn(`${ico('plus')} New reservation`, 'reserve', '', true)}</div></div><section class="panel">${items.length ? `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room</th><th>Check in</th><th>Check out</th><th>Paid</th><th></th></tr></thead><tbody>${items.map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || '')}</small></button></td><td><span class="room-label">${esc(currentRoom(booking))}</span></td><td>${fmtDateTime(booking.start)}</td><td>${fmtDateTime(booking.end)}</td><td>${money(ledger(db, booking.id).paid)}</td><td>${btn('Open', 'stay', booking.id)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No future reservations yet.</div>'}</section></div>`;
+  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Plan ahead</div><h1>Reservations</h1><p class="subtitle">Reserve a 1-bed or 2-bed stay and assign a room now or at arrival.</p></div><div class="actions">${btn(`${ico('plus')} New reservation`, 'reserve', '', true)}</div></div><section class="panel">${items.length ? `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room / type</th><th>Check in</th><th>Check out</th><th>Paid</th><th></th></tr></thead><tbody>${items.map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || '')}</small></button></td><td><span class="room-label">${esc(currentRoom(booking) || `${booking.type === 'one' ? '1 bed' : '2 beds'} · unassigned`)}</span></td><td>${fmtDateTime(booking.start)}</td><td>${fmtDateTime(booking.end)}</td><td>${money(ledger(db, booking.id).paid)}</td><td>${btn('Open', 'stay', booking.id)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No future reservations yet.</div>'}</section></div>`;
 }
 
 function historyPage() {
@@ -246,8 +246,14 @@ function registerForm(reserve = false) {
   const start = reserve ? `${plusDay(today(), 1)}T15:00` : nowLocal();
   const end = `${plusDay(start.slice(0, 10), 1)}T11:00`;
   formContext = { reserve };
-  modal(reserve ? 'New reservation' : 'Register guest', `<form id="register-form" data-reserve="${reserve ? 'true' : 'false'}"><div class="form-section">1 · Person details</div><div class="split">${field('Full name', 'name', 'text', '', 'required autocomplete="name"')}${select('ID type', 'idType', [['passport', 'Passport'], ['national-id', 'National ID'], ['driver-license', 'Driver license'], ['other', 'Other']], 'national-id')}${field('ID number', 'idNumber', 'text', '', 'required')}${field('Phone (optional)', 'phone', 'tel', '', 'autocomplete="tel"')}</div>${field('Address (optional)', 'address') }<div class="form-section">2 · Stay details</div><div class="split">${field('Check-in date and time', 'start', 'datetime-local', start, 'required')}${field('Checkout date and time', 'end', 'datetime-local', end, 'required')}</div><div class="split">${select('Pricing', 'pricing', [['same', 'Same rate for every night'], ['nightly', 'Different rate by night']], 'same')}${field('Rate per night', 'baseRate', 'number', '100.00', 'required min="0" step="0.01" inputmode="decimal"')}</div><div id="rate-list"></div><div id="register-rate-summary" class="notice"></div><div class="split">${field('Other charges (optional)', 'fees', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}${field(reserve ? 'Cash paid now (optional)' : 'Cash received now', 'paid', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}</div>${field('Security deposit (optional)', 'deposit', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}<div class="form-total"><div class="total-line"><span>Total stay charges</span><strong id="register-total">$0.00</strong></div><div class="total-line"><span>Balance after cash received</span><strong id="register-balance">$0.00</strong></div></div><div class="form-section">3 · Assign room</div>${field('Room number', 'room', 'text', '', 'required inputmode="numeric"')}<p class="hint">Type any room number. It will appear on the room board after check-in. The system prevents overlapping stays in the same room.</p>${field('Notes (optional)', 'notes', 'text', '')}${footer(reserve ? 'Save reservation' : 'Check in guest')}</form>`);
+  modal(reserve ? 'New reservation' : 'Register guest', `<form id="register-form" data-reserve="${reserve ? 'true' : 'false'}"><div class="form-section">1 · Person details</div><div class="split">${field('Full name', 'name', 'text', '', 'required autocomplete="name"')}${select('ID type', 'idType', [['passport', 'Passport'], ['national-id', 'National ID'], ['driver-license', 'Driver license'], ['other', 'Other']], 'national-id')}${field('ID number', 'idNumber', 'text', '', 'required')}${field('Phone (optional)', 'phone', 'tel', '', 'autocomplete="tel"')}</div>${field('Address (optional)', 'address') }<div class="form-section">2 · Stay details</div><div class="split">${field('Check-in date and time', 'start', 'datetime-local', start, 'required')}${field('Checkout date and time', 'end', 'datetime-local', end, 'required')}</div>${reserve ? select('Bed type', 'type', [['one', '1 bed'], ['two', '2 beds']], 'one') : ''}<div class="split">${select('Pricing', 'pricing', [['same', 'Same rate for every night'], ['nightly', 'Different rate by night']], 'same')}${field('Rate per night', 'baseRate', 'number', '100.00', 'required min="0" step="0.01" inputmode="decimal"')}</div><div id="rate-list"></div><div id="register-rate-summary" class="notice"></div><div class="split">${field('Other charges (optional)', 'fees', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}${field(reserve ? 'Cash paid now (optional)' : 'Cash received now', 'paid', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}</div>${field('Security deposit (optional)', 'deposit', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}<div class="form-total"><div class="total-line"><span>Total stay charges</span><strong id="register-total">$0.00</strong></div><div class="total-line"><span>Balance after cash received</span><strong id="register-balance">$0.00</strong></div></div><div class="form-section">3 · Assign room</div>${field(`Room number${reserve ? ' (optional)' : ''}`, 'room', 'text', '', `${reserve ? '' : 'required '}inputmode="numeric"`)}<p class="hint">${reserve ? 'Leave room blank to assign it when the guest arrives.' : 'Type any room number. It will appear on the room board after check-in.'} The system prevents overlapping stays in the same room.</p>${field('Notes (optional)', 'notes', 'text', '')}${footer(reserve ? 'Save reservation' : 'Check in guest')}</form>`);
   updateRegisterForm();
+}
+
+function checkInForm(id) {
+  const booking = db.bookings.find((item) => item.id === id);
+  if (!booking) return;
+  modal('Check in reservation', `<form id="checkin-form" data-id="${esc(id)}"><div class="notice">${esc(guestName(booking))} is reserved for ${fmtDate(booking.start)}. Assign a room number now.</div>${field('Room number', 'room', 'text', currentRoom(booking), 'required inputmode="numeric"')}<p class="hint">The room becomes part of the live room board when you confirm check-in.</p>${footer('Check in guest')}</form>`);
 }
 
 function updateRegisterForm() {
@@ -369,7 +375,7 @@ document.addEventListener('click', async (event) => {
     if (action === 'guest') { showGuest(id); return; }
     if (action === 'room-history') { showRoomHistory(id); return; }
     if (['collect', 'transfer', 'extend', 'checkout', 'rates', 'note'].includes(action)) { actionForm(action, id); return; }
-    if (action === 'check-in') { await command('check-in', { id }); closeModal(); page = 'home'; render(); showStay(id); toast('Guest checked in.'); return; }
+    if (action === 'check-in') { checkInForm(id); return; }
     if (action === 'cancel') { await command('cancel', { id }); closeModal(); render(); toast('Reservation cancelled.'); return; }
     if (action === 'reset-demo') { resetDemo(); return; }
   } catch (error) {
@@ -404,11 +410,16 @@ document.addEventListener('submit', async (event) => {
     if (form.id === 'register-form') {
       const rates = registerRates(form);
       const id = await command('create', {
-        status: form.dataset.reserve === 'true' ? 'reserved' : 'in-house', name: values.name, idType: values.idType,
+        status: form.dataset.reserve === 'true' ? 'reserved' : 'in-house', type: values.type, name: values.name, idType: values.idType,
         idNumber: values.idNumber, phone: values.phone, address: values.address, room: values.room,
         start: values.start, end: values.end, rates, fees: amount(values.fees), paid: amount(values.paid), deposit: amount(values.deposit), notes: values.notes,
       });
       closeModal(); page = form.dataset.reserve === 'true' ? 'reservations' : 'home'; render(); showStay(id); toast(form.dataset.reserve === 'true' ? 'Reservation saved.' : 'Guest checked in.'); return;
+    }
+    if (form.id === 'checkin-form') {
+      const id = form.dataset.id;
+      await command('check-in', { id, room: values.room });
+      closeModal(); page = 'home'; render(); showStay(id); toast('Guest checked in.'); return;
     }
     if (form.id === 'action-form') {
       const commandName = form.dataset.command;

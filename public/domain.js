@@ -167,10 +167,11 @@ export function applyCommand(state, actor, command, payload = {}, at = nowLocal(
     requireValue(['in-house', 'reserved'].includes(payload.status), 'Choose an active stay or future reservation.');
     requireValue(clean(payload.name), 'Guest name is required.');
     requireValue(clean(payload.idNumber), 'ID number is required.');
-    requireValue(clean(payload.room, 40), 'Room number is required.');
+    requireValue(payload.status === 'reserved' || clean(payload.room, 40), 'Room number is required for check-in.');
+    if (payload.status === 'reserved') requireValue(['one', 'two'].includes(payload.type), 'Choose a bed type for the reservation.');
     requireValue(validDate(payload.start) && validDate(payload.end), 'Enter valid check-in and checkout dates.');
     requireValue(payload.end > payload.start, 'Checkout must be after check-in.');
-    requireValue(roomAvailable(db, payload.room, payload.start, payload.end), 'That room is already occupied for these dates.');
+    if (clean(payload.room, 40)) requireValue(roomAvailable(db, payload.room, payload.start, payload.end), 'That room is already occupied for these dates.');
     const rates = validateRates(payload.rates, payload.start, payload.end);
     const person = {
       id: uid(), name: clean(payload.name), idType: clean(payload.idType),
@@ -178,11 +179,11 @@ export function applyCommand(state, actor, command, payload = {}, at = nowLocal(
     };
     booking = {
       id: uid(), reference: `MD-${String(db.bookings.length + 1001)}`, guest: person.id,
-      guestSnapshot: structuredClone(person), type: 'room', room: clean(payload.room, 40),
+      guestSnapshot: structuredClone(person), type: clean(payload.type, 20) || 'room', room: clean(payload.room, 40),
       start: payload.start, end: payload.end, actualIn: payload.start, actualOut: null,
       status: payload.status, rates, fees: integerCents(payload.fees || 0), adjustments: [],
       notes: clean(payload.notes, 2000), createdBy: actor, assignedBy: actor,
-      segments: [{ room: clean(payload.room, 40), start: payload.start, end: null }],
+      segments: clean(payload.room, 40) ? [{ room: clean(payload.room, 40), start: payload.start, end: null }] : [],
     };
     db.guests.push(person);
     db.bookings.push(booking);
@@ -193,9 +194,14 @@ export function applyCommand(state, actor, command, payload = {}, at = nowLocal(
     requireValue(booking, 'Stay not found.');
     if (command === 'check-in') {
       requireValue(booking.status === 'reserved', 'Only a future reservation can be checked in.');
+      const room = clean(payload.room, 40) || currentRoom(booking);
+      requireValue(room, 'Enter a room number at check-in.');
+      requireValue(roomAvailable(db, room, at, booking.end, booking.id), 'That room is already occupied.');
       booking.status = 'in-house';
       booking.actualIn = at;
-      detail = `Checked in to Room ${currentRoom(booking)}`;
+      booking.room = room;
+      booking.segments = [{ room, start: at, end: null }];
+      detail = `Checked in to Room ${room}`;
     } else if (command === 'cancel') {
       requireValue(booking.status === 'reserved', 'Only a future reservation can be cancelled.');
       booking.status = 'cancelled';

@@ -13,7 +13,7 @@ function payload(extra = {}) {
   const end = `${plusDay(day, 3)}T11:00`;
   return {
     status: 'in-house', name: 'Test Guest', idNumber: 'TEST-ID', idType: 'Passport',
-    room: '101', start, end,
+    room: '101', type: 'one', start, end,
     rates: nights(start, end).map((date, index) => ({ date, amount: index === 1 ? 11000 : 10000 })),
     paid: 10000, deposit: 5000, ...extra,
   };
@@ -70,9 +70,9 @@ test('extension preserves old rates and adds a new exact rate', () => {
 });
 
 test('future reservation can be checked in or cancelled without preloaded rooms', () => {
-  const reservation = create(seed(), { status: 'reserved', room: '205', paid: 5000, deposit: 0 });
+  const reservation = create(seed(), { status: 'reserved', room: '', paid: 5000, deposit: 0 });
   assert.equal(reservation.db.bookings[0].status, 'reserved');
-  const checkedIn = applyCommand(reservation.db, 'boss', 'check-in', { id: reservation.id }, at);
+  const checkedIn = applyCommand(reservation.db, 'boss', 'check-in', { id: reservation.id, room: '205' }, at);
   assert.equal(checkedIn.db.bookings[0].status, 'in-house');
   assert.equal(currentRoom(checkedIn.db.bookings[0]), '205');
   const cancelled = applyCommand(reservation.db, 'boss', 'cancel', { id: reservation.id }, at);
