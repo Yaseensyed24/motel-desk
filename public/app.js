@@ -1,108 +1,451 @@
-import {seed,applyCommand,today,nowLocal,plusDay,nights,total,balance,ledger,guest,currentRoom,cashSummary,category,roomAvailable,typeAvailable} from './domain.js';
-const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),money=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:n%100?2:0}).format(n/100),amount=s=>Math.round(Number(s||0)*100);
-const iconPaths={home:'M3 10 12 3l9 7v10H3Z M9 20v-7h6v7',bed:'M3 18V7 M3 14h18v4 M3 10h6v4 M9 10h10a2 2 0 0 1 2 2v2 M3 18v2 M21 18v2',calendar:'M4 5h16v16H4Z M8 3v4 M16 3v4 M4 10h16 M8 14h2 M14 14h2 M8 18h2',history:'M4 8a9 9 0 1 1-1 8 M4 3v5h5 M12 7v6l4 2',users:'M16 21v-3a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v3 M9.5 3a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M17 4a4 4 0 0 1 0 7 M20 21v-3a4 4 0 0 0-3-4',cash:'M3 6h18v13H3Z M3 10h18 M7 15h4',arrow:'M9 5l7 7-7 7',out:'M10 5H4v14h6 M14 7l5 5-5 5 M8 12h11',plus:'M12 5v14 M5 12h14',search:'M10 3a7 7 0 1 1 0 14 7 7 0 0 1 0-14 M15 15l6 6',check:'m5 12 4 4L19 6',settings:'M4 7h16 M8 4v6 M4 17h16 M16 14v6',download:'M12 3v12 M7 10l5 5 5-5 M4 17v4h16v-4'};
-const ico=k=>`<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${iconPaths[k]||iconPaths.home}"/></svg>`;
-const fmt=s=>s?new Date(s.slice(0,10)+'T12:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'}):'—';
-const time=s=>s?new Date('2000-01-01'+s.slice(10)+'Z').toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'UTC'}):'—';
-const stamp=s=>`${fmt(s)} · ${time(s)}`;
-const initials=s=>s.split(' ').map(s=>s[0]).join('').slice(0,2);
-const labelType=t=>t==='one'?'1 bed':'2 beds';
-const nameUser=id=>db.staff.find(s=>s.id===id)?.name||'Former staff';
-let db,actor=null,mode='demo',page='home',roomFilter='all',historyTab='guests',historySearch='',collectionFrom=today(),collectionTo=today(),collectionUser='',reservationFilter='reserved',toastTimer;
-let key='staydesk-demo-v1',formContext=null;
-async function api(path,body){const r=await fetch('./api/'+path,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json','X-Staydesk-Request':'1'}:{},body:body?JSON.stringify(body):undefined,credentials:'same-origin'});const j=await r.json();if(!r.ok){if(r.status===409){await load();render();}throw Error(j.error||'Unable to save.');}return j;}
-async function load(){if(mode==='server'){const r=await api('state');db=r.db;actor=r.user;}else {try{db=JSON.parse(localStorage.getItem(key))||seed();}catch{db=seed();}actor=sessionStorage.getItem('staydesk-user')||null;if(!db.staff.some(s=>s.id===actor&&s.active))actor=null;}}
-async function start(){try{const r=await fetch('./api/health',{cache:'no-store'});if(r.ok&&(await r.json()).service==='staydesk')mode='server';}catch{}if(mode==='server'){try{await load();}catch{actor=null;}}else await load();render();}
-async function command(type,p){if(mode==='server'){const r=await api('command',{command:type,payload:p,revision:db.revision});db=r.db;return r.id;}const saved=JSON.parse(localStorage.getItem(key)||'null');if(saved&&saved.revision!==db.revision){db=saved;render();throw Error('Another tab updated the register. Review the latest data and try again.');}const r=applyCommand(db,actor,type,p);localStorage.setItem(key,JSON.stringify(r.db));db=r.db;return r.id;}
-function toast(s){$('#toast').textContent=s;$('#toast').classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('show'),3500);}
-function close(){const d=$('#modal');if(d.open)d.close();d.innerHTML='';formContext=null;}
-function modal(title,body){const d=$('#modal');d.innerHTML=`<div class="modal-head"><h2>${esc(title)}</h2><button class="close" data-action="close" aria-label="Close dialog">×</button></div><div class="modal-body">${body}</div>`;if(!d.open)d.showModal();}
-const btn=(text,action,id='',primary=false)=>`<button class="btn ${primary?'primary':''}" data-action="${action}" ${id?`data-id="${esc(id)}"`:''}>${text}</button>`;
-const badge=(txt,cls='')=>`<span class="badge ${cls}">${esc(txt)}</span>`;
-const field=(label,name,type='text',value='',extra='')=>`<div class="field"><label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra}></div>`;
-const select=(label,name,options,value='')=>`<div class="field"><label for="f-${name}">${label}</label><select id="f-${name}" name="${name}">${options.map(([v,l])=>`<option value="${esc(v)}" ${v===value?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
-const errorBox='<div class="form-error" role="alert"></div>';
-const foot=(text='Save')=>`${errorBox}<div class="modal-footer"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" type="submit">${text}</button></div>`;
-function active(){return db.bookings.filter(b=>b.status==='in-house');}
-function render(){if(!actor){renderLogin();return;}const u=db.staff.find(s=>s.id===actor);const nav=[['home','home','Overview'],['rooms','bed','Room board'],['reservations','calendar','Reservations'],['history','history','History'],['cash','cash','Cash collection'],['staff','users','Staff accounts']];$('#app').innerHTML=`<div class="shell"><aside class="sidebar"><div class="brand"><img src="./favicon.svg" alt="">Staydesk</div><div class="nav-label">Front desk</div><nav class="nav" aria-label="Main navigation">${nav.map(([id,i,t])=>`<button data-page="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}>${ico(i)}${t}${id==='reservations'?`<span class="count">${db.bookings.filter(b=>b.status==='reserved').length}</span>`:''}</button>`).join('')}</nav><div class="side-bottom"><div class="notice" style="background:#1c3c40;color:#b9d2cd;font-size:12px">${mode==='demo'?'Sample property<br>16 rooms · Cash only':'Motel front desk<br>Shared register · Cash only'}</div><div class="staff-card"><span class="avatar">${esc(initials(u.name))}</span><div style="font-size:13px">${esc(u.name)}<small>Front desk · Full access</small></div><button data-action="logout" aria-label="Sign out">${ico('out')}</button></div></div></aside><main class="main"><header class="topbar"><div class="crumb">Workspace <span style="margin:0 12px;color:#b6c3c1">/</span> <strong>${nav.find(n=>n[0]===page)?.[2]||'Overview'}</strong></div><div class="brand mobile-brand"><img src="./favicon.svg" alt="">Staydesk</div><div class="topbar-right"><span class="date-text">${new Date(today()+'T12:00Z').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',timeZone:'UTC'})}</span><span class="live">${mode==='demo'?'Demo workspace':'Shared workspace'}</span><button data-action="logout" class="text-btn" aria-label="Sign out"><span class="avatar">${esc(initials(u.name))}</span></button></div></header><div class="content">${mode==='demo'?`<div class="demo-banner"><span><strong>Interactive demo</strong> · Fictional guests. Changes stay in this browser. Do not enter real IDs or guest details.</span><button data-action="about">About this version ↗</button></div>`:''}${({home:home,rooms:roomsPage,reservations:reservationsPage,history:historyPage,cash:cashPage,staff:staffPage}[page]||home)()}</div></main></div>`;}
-function renderLogin(){if(mode==='server'){$('#app').innerHTML=`<main class="login"><section class="login-card"><div class="brand"><img src="./favicon.svg" alt="">Staydesk</div><h1>Welcome back.</h1><p class="subtitle">Sign in to your motel workspace.</p><form id="login-form">${field('Username','username','text','','required autocomplete="username"')}${field('Password','password','password','','required autocomplete="current-password"')}${errorBox}<button class="btn primary" type="submit">Sign in ${ico('arrow')}</button></form><p class="hint" style="margin-top:18px">Need access or a password reset? Ask a colleague with an active account.</p></section></main>`;}else{$('#app').innerHTML=`<main class="login"><section class="login-card"><div class="brand"><img src="./favicon.svg" alt="">Staydesk</div><div class="eyebrow">Motel front desk demo</div><h1>A clearer day at the desk.</h1><p class="subtitle">Rooms, guests, reservations and every cash collection, in one place.</p><div class="login-users">${db.staff.filter(s=>s.active).map(s=>`<button class="login-user" data-action="demo-login" data-id="${s.id}"><span class="avatar">${esc(initials(s.name))}</span><span><strong>${esc(s.name)}</strong><small>Explore with this sample staff identity</small></span>${ico('arrow')}</button>`).join('')}</div><div class="notice warn">Demo identities are not secure logins. Use fictional data only. This preview saves changes to this browser; it does not share records between devices.</div></section></main>`;}}
-function heading(eyebrow,title,sub,actions=''){return`<div class="page-head"><div><div class="eyebrow">${eyebrow}</div><h1>${title}</h1><p class="subtitle">${sub}</p></div><div class="actions">${actions}</div></div>`;}
-function home(){const a=active(),depart=a.filter(b=>category(db,b)==='departures'),stay=a.filter(b=>category(db,b)==='stayovers'),available=db.rooms.filter(r=>r.status==='ready'&&roomAvailable(db,r.number,nowLocal(),plusDay(today(),1)+'T11:00')),arr=db.bookings.filter(b=>b.status==='reserved'&&b.start.slice(0,10)===today());const stats=[['Stayovers',stay.length,'Paid for their current stay','bed','stayovers'],['Departures',depart.length,'Due today or overdue','out','departures'],['Arrivals today',arr.length,'Upcoming check-ins','calendar','arrivals'],['Available rooms',available.length,'Ready for tonight','check','ready']];return heading('Your daily overview','Front desk, at a glance.','A little less paperwork. A little more hospitality.',btn('New reservation','reserve')+btn(ico('plus')+' Assign room','assign','',true))+`<section class="stats">${stats.map(([t,n,f,i,filter])=>`<button class="stat" data-action="home-filter" data-id="${filter}"><div class="stat-top">${t}<span class="stat-icon">${ico(i)}</span></div><div class="stat-value">${String(n).padStart(2,'0')}</div><div class="stat-foot">${f}</div></button>`).join('')}</section><div class="columns"><section class="panel"><div class="panel-head"><div><h2>Room overview</h2><small>Click a room to see what’s next.</small></div><div class="occupancy"><div class="track"><span style="width:${a.length/db.rooms.length*100}%"></span></div>${a.length}/${db.rooms.length} occupied</div></div>${roomTools()}${roomGrid()}</section>${cashWidget()}</div>${dayList()}`;}
-function roomTools(){return`<div class="room-tools"><div class="segmented">${[['all','All rooms'],['ready','Available'],['departures','Departures']].map(([k,t])=>`<button data-action="room-filter" data-id="${k}" class="${roomFilter===k?'active':''}">${t}</button>`).join('')}</div><div class="legend"><span><i class="dot"></i>Stayover</span><span><i class="dot departure"></i>Due out</span></div></div>`;}
-function roomState(r){const b=active().find(b=>currentRoom(b)===r.number);return{b,status:b?category(db,b):r.status};}
-function roomGrid(){const rooms=db.rooms.filter(r=>roomFilter==='all'||roomState(r).status===roomFilter);return`<div class="rooms">${rooms.map(r=>{const {b,status}=roomState(r);const statusLabel=b?(status==='departures'?(b.end<nowLocal()?'Overdue':'Due out')+' · '+time(b.end):status==='payment-due'?'Payment due':`Until ${fmt(b.end)}`):r.status==='ready'?'Ready to assign':r.status==='dirty'?'Needs cleaning':'Out of service';return`<button class="room ${status}" data-action="room" data-id="${r.number}" aria-label="Room ${r.number}, ${b?esc(guest(db,b).name):statusLabel}"><div class="room-top"><span class="room-no">${r.number}</span>${ico('bed')}</div><div class="room-name">${b?esc(guest(db,b).name):labelType(r.type)+' room'}</div><div class="room-status">${statusLabel}</div></button>`;}).join('')}</div>${!rooms.length?'<div class="empty">No rooms in this category.</div>':''}`;}
-function cashWidget(){const s=cashSummary(db,today());return`<section class="panel"><div class="panel-head"><div><h2>Today’s cash collection</h2><small>Collected by your front desk team</small></div>${ico('cash')}</div><div class="cash-hero"><small>Total cash collected</small>${ico('cash')}<div class="amount">${money(s.gross)}</div><small>${money(s.room)} room payments · ${money(s.deposits)} deposits</small><div class="cash-sub"><div>Cash returned<strong>${money(s.returned)}</strong></div><div>Net collection<strong>${money(s.net)}</strong></div></div></div>${db.staff.filter(s=>s.active||cashSummary(db,today(),today(),s.id).transactions.length).map(u=>{const c=cashSummary(db,today(),today(),u.id);return`<button class="staff-row" data-action="user-cash" data-id="${u.id}"><span class="avatar">${esc(initials(u.name))}</span><span class="name">${esc(u.name)}<small>${c.transactions.filter(t=>['payment','deposit'].includes(t.kind)).length} cash entries · View rooms</small></span><span class="sum">${money(c.gross)}<small>collected</small></span>${ico('arrow')}</button>`;}).join('')}<div class="section-foot">${btn('View all collections →','cash-all')}</div></section>`;}
-function dayList(){const due=active().filter(b=>category(db,b)==='departures');return`<section class="panel"><div class="panel-head"><div><h2>Departures to take care of <span class="badge orange" style="margin-left:7px">${due.length}</span></h2><small>Rooms stay occupied until checkout is confirmed.</small></div></div>${bookingTable(due,'departure')}</section>`;}
-function bookingTable(bs,kind=''){if(!bs.length)return'<div class="empty">Nothing here right now. You’re all caught up.</div>';return`<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room</th><th>${kind==='reservation'?'Arrival':'Check-in'}</th><th>Checkout</th><th>Balance</th><th>Status</th><th></th></tr></thead><tbody>${bs.map(b=>`<tr><td><button class="guest-name" data-action="stay" data-id="${b.id}">${esc(guest(db,b).name)}<small>${b.reference}</small></button></td><td><span class="room-label">${currentRoom(b)||labelType(b.type)}</span></td><td>${fmt(b.actualIn||b.start)}<small style="display:block">${time(b.actualIn||b.start)}</small></td><td>${fmt(b.end)}<small style="display:block">${time(b.end)}</small></td><td class="money ${balance(db,b)>0?'negative':''}">${money(balance(db,b))}${balance(db,b)<0?'<small style="display:block">Credit</small>':''}</td><td>${b.status==='in-house'?(b.end<nowLocal()?badge('Overdue','red'):category(db,b)==='departures'?badge('Due out','orange'):balance(db,b)>0?badge('Balance due','orange'):badge('Paid')):badge(b.status,b.status==='reserved'?'blue':'gray')}</td><td><button class="btn small" data-action="stay" data-id="${b.id}">Open ${ico('arrow')}</button></td></tr>`).join('')}</tbody></table></div>`;}
-function roomsPage(){return heading('Live room board','Every room. One view.','Assign, move or check out guests without losing the history.',btn(ico('plus')+' Assign room','assign','',true))+`<section class="panel"><div class="panel-head"><h2>${db.rooms.length} rooms</h2><div class="segmented">${[['all','All'],['stayovers','Stayovers'],['payment-due','Payment due'],['dirty','Needs cleaning'],['maintenance','Maintenance']].map(([k,t])=>`<button data-action="room-filter" data-id="${k}" class="${roomFilter===k?'active':''}">${t}</button>`).join('')}</div></div>${roomTools()}${roomGrid()}</section>`;}
-function reservationsPage(){const bs=db.bookings.filter(b=>reservationFilter==='all'||b.status===reservationFilter).sort((a,b)=>a.start.localeCompare(b.start));return heading('Plan ahead','Reservations','Hold a room type, record a cash advance, and assign the room at arrival.',btn(ico('plus')+' New reservation','reserve','',true))+`<section class="panel"><div class="filters">${select('Show','reservationStatus',[['reserved','Upcoming reservations'],['cancelled','Cancelled'],['no-show','No-shows'],['all','All bookings']],reservationFilter)}<span class="hint">${bs.length} records · Sorted by arrival</span></div>${bookingTable(bs,'reservation')}</section>`;}
-function historyPage(){let body='';if(historyTab==='guests'){const gs=db.guests.filter(g=>g.name.toLowerCase().includes(historySearch.toLowerCase()));body=`<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Phone</th><th>ID ending</th><th>Visits & bookings</th><th>Last arrival</th><th></th></tr></thead><tbody>${gs.map(g=>{const bs=db.bookings.filter(b=>b.guest===g.id).sort((a,b)=>b.start.localeCompare(a.start));return`<tr><td><button class="guest-name" data-action="guest" data-id="${g.id}">${esc(g.name)}</button></td><td>${esc(g.phone)||'—'}</td><td>${g.idNumber?'•••• '+esc(g.idNumber.slice(-4)):'Not recorded'}</td><td>${bs.length}</td><td>${fmt(bs[0]?.start)}</td><td><button class="btn small" data-action="guest" data-id="${g.id}">Full history →</button></td></tr>`;}).join('')}</tbody></table></div>`;if(!gs.length)body='<div class="empty">No matching guests. Try a different name.</div>';}else{const rs=db.rooms.filter(r=>r.number.includes(historySearch));body=`<div class="table-wrap"><table><thead><tr><th>Room</th><th>Type</th><th>Status</th><th>Recorded stays</th><th></th></tr></thead><tbody>${rs.map(r=>`<tr><td><strong>${r.number}</strong></td><td>${labelType(r.type)}</td><td>${badge(roomState(r).status)}</td><td>${db.bookings.filter(b=>b.segments.some(s=>s.room===r.number)).length}</td><td><button class="btn small" data-action="room-history" data-id="${r.number}">Room history →</button></td></tr>`).join('')}</tbody></table></div>`;}
-return heading('The complete record','Guest & room history','Every visit, payment and room change stays connected.')+`<div class="segmented history-tabs"><button data-action="history-tab" data-id="guests" class="${historyTab==='guests'?'active':''}">Guest history</button><button data-action="history-tab" data-id="rooms" class="${historyTab==='rooms'?'active':''}">Room history</button></div><section class="panel"><form id="history-search" class="filters"><div class="field search"><label for="historyQuery">${historyTab==='guests'?'Find a guest by name':'Find a room by number'}</label><input id="historyQuery" name="query" placeholder="${historyTab==='guests'?'Search guest name…':'For example, 101'}" value="${esc(historySearch)}"></div><button class="btn primary" type="submit">${ico('search')} Search</button></form>${body}</section>`;}
-function cashPage(){const s=cashSummary(db,collectionFrom,collectionTo,collectionUser);const users=db.staff.filter(u=>!collectionUser||u.id===collectionUser);return heading('Every dollar accounted for','Cash collection',collectionUser?`${esc(nameUser(collectionUser))} · Click a transaction to open the stay.`:'See who collected cash, for which room, and when.',btn(ico('download')+' Export CSV','export-cash'))+`<section class="panel"><div class="filters">${field('From','cashFrom','date',collectionFrom)}${field('To','cashTo','date',collectionTo)}${select('Staff member','cashUser',[['','All staff'],...db.staff.map(s=>[s.id,s.name])],collectionUser)}</div></section><div class="stats">${[['Room / reservation cash',s.room,'Cash received, including advances'],['Deposits received',s.deposits,'Held separately from room payments'],['Cash returned',s.returned,'Refunds and deposit returns'],['Net cash collected',s.net,`${money(s.gross)} total cash received`]].map(([t,n,f])=>`<div class="stat"><div class="stat-top">${t}</div><div class="stat-value">${money(n)}</div><div class="stat-foot">${f}</div></div>`).join('')}</div><section class="panel"><div class="panel-head"><h2>Staff breakdown</h2><small>Same access. Individual accountability.</small></div><div class="table-wrap"><table class="staff-table"><thead><tr><th>Staff</th><th>Room cash</th><th>Deposits</th><th>Total received</th><th>Returned</th><th>Net</th></tr></thead><tbody>${users.map(u=>{const x=cashSummary(db,collectionFrom,collectionTo,u.id);return`<tr><td><button class="text-btn" data-action="filter-user" data-id="${u.id}">${esc(u.name)} →</button></td><td>${money(x.room)}</td><td>${money(x.deposits)}</td><td class="money">${money(x.gross)}</td><td>${money(x.returned)}</td><td class="money">${money(x.net)}</td></tr>`;}).join('')}</tbody></table></div></section><section class="panel"><div class="panel-head"><h2>Cash activity</h2><small>${s.transactions.length} entries</small></div>${transactionTable(s.transactions)}</section><p class="hint">A receipt is counted on the day cash is collected. Check-in and room transfers never count that cash again. Net collection is not a cash drawer balance.</p>`;}
-const kindLabel=k=>({'payment':'Room payment','deposit':'Security deposit','refund':'Room refund','deposit-return':'Deposit returned','deposit-retained':'Deposit retained'}[k]||k);
-function transactionTable(ts){return ts.length?`<div class="table-wrap"><table><thead><tr><th>Date & time</th><th>Guest / reference</th><th>Room at collection</th><th>Entry</th><th>Staff</th><th>Amount</th></tr></thead><tbody>${[...ts].sort((a,b)=>b.at.localeCompare(a.at)).map(t=>{const b=db.bookings.find(b=>b.id===t.booking);return`<tr><td>${stamp(t.at)}</td><td><button class="guest-name" data-action="stay" data-id="${b.id}">${esc(guest(db,b).name)}<small>${b.reference}</small></button></td><td>${t.room||`Unassigned · ${labelType(b.type)}`}</td><td>${t.void?badge('Voided','red')+' ':''}${badge(kindLabel(t.kind),t.kind.includes('refund')||t.kind.includes('return')?'orange':t.kind==='deposit'?'blue':'gray')}${t.note?`<small style="display:block;max-width:220px;white-space:normal;margin-top:5px">${esc(t.note)}</small>`:''}</td><td>${esc(nameUser(t.user))}</td><td class="money">${['refund','deposit-return'].includes(t.kind)?'−':''}${money(t.amount)}</td></tr>`;}).join('')}</tbody></table></div>`:'<div class="empty">No cash entries for this selection.</div>';}
-function staffPage(){return heading('Your front desk team','Staff accounts','Everyone has the same access. Each action keeps its own author.',btn(ico('plus')+' Add staff account','add-staff','',true))+`${mode==='demo'?'<div class="notice warn" style="margin-bottom:20px">Demo mode uses sample identities without passwords. Secure password accounts are available in the server version.</div>':''}<section class="panel"><div class="table-wrap"><table><thead><tr><th>Staff</th><th>Username</th><th>Access</th><th>Status</th><th></th></tr></thead><tbody>${db.staff.map(s=>`<tr><td><strong>${esc(s.name)}</strong>${s.id===actor?' '+badge('You'):''}</td><td>${esc(s.username)}</td><td>Full access</td><td>${badge(s.active?'Active':'Inactive',s.active?'':'gray')}</td><td><div class="actions">${s.id!==actor?btn(s.active?'Deactivate':'Reactivate','staff-status',s.id):''}${mode==='server'?btn('Reset password','reset-password',s.id):''}</div></td></tr>`).join('')}</tbody></table></div></section><section class="panel padded"><h2>Keep a copy of your records</h2><p class="subtitle">Export the register as JSON. Keep downloaded guest records in a secure location.</p><div class="actions" style="margin-top:16px">${btn(ico('download')+' Export register','export-data')}${mode==='demo'?btn('Reset sample workspace','reset-demo'):''}</div></section>`;}
-function showRoom(number){const r=db.rooms.find(r=>r.number===number),b=active().find(b=>currentRoom(b)===number);if(b){showStay(b.id);return;}modal('Room '+number,`<div class="detail-grid"><div><small>Room type</small><strong>${labelType(r.type)}</strong></div><div><small>Status</small>${badge(r.status)}</div><div><small>Default rate</small><strong>${money(r.rate)}</strong></div></div><div class="actions">${r.status==='ready'?btn('Assign room','assign',number,true):btn('Mark room ready','mark-ready',number,true)}${r.status==='ready'?btn('Mark needs cleaning','mark-dirty',number):''}${r.status!=='maintenance'?btn('Mark out of service','mark-maintenance',number):''}${btn('Room history','room-history',number)}</div><p class="hint" style="margin-top:20px">Availability is checked across every date before a stay is saved.</p>${errorBox}`);}
-function showStay(id){const b=db.bookings.find(b=>b.id===id),g=guest(db,b),l=ledger(db,id);modal(`${g.name} · ${b.reference}`,`<div class="detail-grid"><div><small>Current / last room</small><strong>${currentRoom(b)||'Not assigned'} · ${labelType(b.type)}</strong></div><div><small>Status</small>${badge(b.status)}</div><div><small>Assigned / booked by</small><strong>${esc(nameUser(b.assignedBy||b.createdBy))}</strong></div><div><small>Scheduled check-in</small><strong>${stamp(b.start)}</strong></div><div><small>Scheduled checkout</small><strong>${stamp(b.end)}</strong></div><div><small>Actual checkout</small><strong>${b.actualOut?stamp(b.actualOut):'—'}</strong></div></div><div class="form-total"><div class="total-line"><span>Total charges</span><strong>${money(total(b))}</strong></div><div class="total-line"><span>Net room cash paid</span><strong>${money(l.paid)}</strong></div><div class="total-line"><span>Security deposit held</span><strong>${money(l.deposit)}</strong></div><div class="total-line large"><span>${balance(db,b)<0?'Credit / refund due':'Room balance'}</span><strong>${money(Math.abs(balance(db,b)))}</strong></div></div><div class="actions">${btn('Record cash','collect',id,true)}${b.status==='in-house'?btn('Extend stay','extend',id)+btn('Change room','transfer',id)+btn('Check out','checkout',id):''}${b.status==='reserved'?btn('Check in','check-in',id)+btn('Edit reservation','edit-reservation',id)+btn('Extend reservation','extend',id)+btn('Cancel / no-show','cancel',id):''}${btn('Edit nightly rates','rates',id)}${btn('Adjust charge','adjust',id)}${btn('Correct cash entry','void',id)}${btn('Add note','note',id)}${btn('Guest history','guest',g.id)}</div><div class="form-section">Guest details</div><div class="detail-grid"><div><small>Phone</small><strong>${esc(g.phone)||'—'}</strong></div><div><small>${esc(g.idType)||'ID'}</small><strong>${g.idNumber?'•••• '+esc(g.idNumber.slice(-4)):'Not recorded'}</strong></div><div>${g.idNumber?btn('View ID','reveal-id',id):''}</div></div>${b.notes?`<div class="detail-notes">${esc(b.notes)}</div>`:''}<details><summary class="text-btn">Nightly rates & adjustments</summary><div style="margin-top:12px">${b.rates.map(r=>`<div class="total-line"><span>${fmt(r.date)} night</span><strong>${money(r.amount)}</strong></div>`).join('')}${b.fees?`<div class="total-line"><span>Taxes / fees</span><strong>${money(b.fees)}</strong></div>`:''}${b.adjustments.map(a=>`<div class="total-line"><span>${esc(a.reason)}</span><strong>${money(a.amount)}</strong></div>`).join('')}</div></details><div class="form-section">Room journey</div>${b.segments.length?b.segments.map(s=>`<div class="event"><span class="mark"></span><div><strong>Room ${s.room}</strong><small>${stamp(s.start)} → ${s.end?stamp(s.end):'Currently in room'}</small></div></div>`).join(''):'<p class="hint">A room is assigned at check-in.</p>'}<div class="form-section">Cash history</div>${transactionTable(db.transactions.filter(t=>t.booking===id))}<div class="form-section">Activity</div>${db.activity.filter(a=>a.booking===id).reverse().map(a=>`<div class="event"><span class="mark"></span><div><strong>${esc(a.action.replaceAll('-',' '))}</strong> · ${esc(a.detail)}<small>${esc(nameUser(a.user))} · ${stamp(a.at)}</small></div></div>`).join('')||'<p class="hint">Sample stay imported into demo.</p>'}`);}
-function showGuest(id){const g=db.guests.find(g=>g.id===id);modal(g.name+' · Guest history',`<div class="detail-grid"><div><small>Phone</small><strong>${esc(g.phone)||'—'}</strong></div><div><small>ID ending</small><strong>${g.idNumber?'•••• '+esc(g.idNumber.slice(-4)):'Not recorded'}</strong></div></div>${bookingTable(db.bookings.filter(b=>b.guest===id).sort((a,b)=>b.start.localeCompare(a.start)))}`);}
-function showRoomHistory(number){const entries=db.bookings.flatMap(b=>b.segments.filter(s=>s.room===number).map(s=>({b,s}))).sort((a,b)=>b.s.start.localeCompare(a.s.start));modal('Room '+number+' · Complete history',`${entries.length?entries.map(({b,s})=>`<div class="event"><span class="mark"></span><div style="flex:1"><button class="guest-name" data-action="stay" data-id="${b.id}">${esc(guest(db,b).name)} →</button><small>${stamp(s.start)} → ${s.end?stamp(s.end):'Currently here'}</small><small>${b.reference} · ${b.segments.length>1?'Includes room transfer':'Single-room stay'} · Assigned by ${esc(nameUser(b.assignedBy||b.createdBy))}</small></div></div>`).join(''):'<div class="empty">No previous stays in this room.</div>'}<div class="form-section">Future assigned reservations</div>${bookingTable(db.bookings.filter(b=>b.status==='reserved'&&b.room===number))}`);}
-function bookingForm(reserve,room=''){const r=db.rooms.find(r=>r.number===room);formContext={reserve,guestId:'',oldRates:[]};modal(reserve?'New reservation':'Assign a room',`<form id="booking-form"><div class="form-section">Guest information</div>${select('Returning guest (optional)','existing',[['','New guest'],...db.guests.map(g=>[g.id,g.name+' · '+(g.idNumber?'ID …'+g.idNumber.slice(-4):g.phone||'No ID')])])}<div class="split">${field('Guest full name','name','text','','required maxlength="200"')}${field('Phone (optional)','phone','tel')}</div><div class="split">${select('ID type','idType',[['Driver license','Driver license'],['Passport','Passport'],['State ID','State ID'],['Other','Other']])}${field(reserve?'ID number (optional until arrival)':'ID number','idNumber','text','',reserve?'':'required')}</div><div class="form-section">Room & dates</div><div class="split">${select('Room type','type',[['one','1 bed'],['two','2 beds']],r?.type||'one')}${select(reserve?'Specific room (optional)':'Room number','room',[['',reserve?'Assign at check-in':'Select available room']],room)}</div><div class="split">${field('Check-in date & time','start','datetime-local',reserve?today()+'T15:00':nowLocal(),'required')}${field('Checkout date & time','end','datetime-local',plusDay(today(),1)+'T11:00','required')}</div><div class="form-section">Nightly pricing</div><div class="split">${field('Base rate per night ($)','baseRate','number',r?r.rate/100:100,'min="0" step="0.01" required')}${select('Pricing option','pricing',[['flat','One rate for all nights'],['nightly','Different rate each night']])}</div><div id="rate-list"></div><div class="split" style="margin-top:16px">${field('Taxes / fees total ($)','fees','number','0','min="0" step="0.01"')}${field('Cash received now ($)','paid','number','0','min="0" step="0.01"')}</div>${field('Security deposit received ($)','deposit','number','0','min="0" step="0.01"')}<div class="field"><label for="f-notes">Notes (optional)</label><textarea id="f-notes" name="notes"></textarea></div><div id="booking-total" class="form-total"></div>${foot(reserve?'Save reservation':'Confirm check-in')}</form>`);formContext={reserve,guestId:'',preferredRoom:room,oldRates:[]};updateBookingRates();updateRoomOptions();}
-function formValues(form){return Object.fromEntries(new FormData(form));}
-function updateRoomOptions(){const f=$('#booking-form');if(!f)return;const p=formValues(f),s=f.elements.room;const selected=s.value||formContext?.preferredRoom||'';const opts=db.rooms.filter(r=>r.type===p.type&&(formContext.reserve||r.status==='ready')&&roomAvailable(db,r.number,p.start,p.end));s.innerHTML=`<option value="">${formContext.reserve?'Assign at check-in':'Select available room'}</option>`+opts.map(r=>`<option value="${r.number}" ${r.number===selected?'selected':''}>${r.number} · ${labelType(r.type)}</option>`).join('');formContext.preferredRoom='';}
-function getRates(){return [...document.querySelectorAll('[data-rate-date]')].map(el=>({date:el.dataset.rateDate,amount:amount(el.value)}));}
-function updateBookingRates(preserve=false){const f=$('#booking-form');if(!f)return;const p=formValues(f),old=preserve?getRates():[];try{const dates=nights(p.start,p.end);$('#rate-list').innerHTML=dates.map(date=>{const rate=old.find(r=>r.date===date)?.amount??amount(p.baseRate);const weekday=new Date(date+'T12:00Z').toLocaleDateString('en-US',{weekday:'short',timeZone:'UTC'});return`<div class="rate-row"><label for="rate-${date}">${weekday}, ${fmt(date)}</label><input id="rate-${date}" type="number" min="0" step="0.01" required data-rate-date="${date}" value="${(p.pricing==='flat'?amount(p.baseRate):rate)/100}" ${p.pricing==='flat'?'readonly':''} aria-label="Rate for ${date}"></div>`;}).join('');updateTotal();}catch(e){$('#rate-list').innerHTML=`<p class="notice warn">${esc(e.message)}</p>`;$('#booking-total').innerHTML='Choose valid stay dates.';}}
-function updateTotal(){const f=$('#booking-form');if(!f)return;const p=formValues(f),subtotal=getRates().reduce((a,r)=>a+r.amount,0),t=subtotal+amount(p.fees);$('#booking-total').innerHTML=`<div class="total-line"><span>${getRates().length} night${getRates().length!==1?'s':''} · Room subtotal</span><strong>${money(subtotal)}</strong></div><div class="total-line"><span>Taxes / fees</span><strong>${money(amount(p.fees))}</strong></div><div class="total-line"><span>Cash received now</span><strong>${money(amount(p.paid))}</strong></div><div class="total-line large"><span>Room balance</span><strong>${money(t-amount(p.paid))}</strong></div><div class="total-line"><span>Security deposit (separate)</span><strong>${money(amount(p.deposit))}</strong></div>`;}
-function actionForm(action,id){const b=db.bookings.find(b=>b.id===id);let body='',title='',submit='Save';const readyOptions=db.rooms.filter(r=>r.status==='ready'&&(action==='check-in'||r.number!==currentRoom(b))&&roomAvailable(db,r.number,nowLocal(),b.end,b.id)).map(r=>[r.number,r.number+' · '+labelType(r.type)]);
-if(action==='collect'){title='Record cash · '+(currentRoom(b)||b.reference);body=`<div class="notice" style="margin-top:20px">Room balance: <strong>${money(balance(db,b))}</strong> · Deposit held: <strong>${money(ledger(db,b.id).deposit)}</strong><br>Recorded automatically under ${esc(nameUser(actor))}.</div><div style="margin-top:20px">${select('Entry type','kind',[['payment','Room payment / advance'],['deposit','Security deposit received'],['refund','Room payment refund'],['deposit-return','Security deposit returned'],['deposit-retained','Security deposit retained (no new cash)']])}${field('Amount ($)','amount','number',Math.max(0,balance(db,b))/100,'required min="0.01" step="0.01"')}${field('Reason / note','note','text')}</div>`;submit='Record cash';}
-if(action==='transfer'){title='Change room · '+currentRoom(b);body=`<div class="notice" style="margin-top:20px">The guest keeps the same checkout, payments, deposit and nightly rates. Both rooms keep their occupancy history.</div><div style="margin-top:20px">${select('Move to room','room',[['','Select ready room'],...readyOptions])}${field('Reason for move','reason','text','','required')}<label class="check"><input type="checkbox" name="maintenance">Mark the previous room out of service (otherwise needs cleaning)</label></div>`;submit='Confirm room transfer';}
-if(action==='extend'){title='Extend stay · '+(currentRoom(b)||b.reference);body=`<div class="notice" style="margin-top:20px">Current checkout: ${stamp(b.end)}. Existing nightly rates are preserved.</div><div class="split" style="margin-top:20px">${field('New checkout','end','datetime-local',plusDay(b.end,1)+'T11:00','required')}${field('Rate for new nights ($)','baseRate','number',b.rates.at(-1).amount/100,'required min="0" step="0.01"')}</div><div id="extension-rates"></div>${field('Additional cash received ($)','paid','number','0','min="0" step="0.01"')}`;submit='Extend stay';}
-if(action==='check-in'){title='Check in · '+b.reference;body=`<div class="notice" style="margin-top:20px">${labelType(b.type)} reserved · ${money(ledger(db,b.id).paid)} already paid. Advance payments carry over automatically.</div><div style="margin-top:20px">${select('Assign room','room',[['','Select ready room'],...readyOptions.filter(([n])=>db.rooms.find(r=>r.number===n).type===b.type)])}<div class="split">${select('ID type','idType',[['Driver license','Driver license'],['Passport','Passport'],['State ID','State ID'],['Other','Other']])}${field('ID number','idNumber','text',guest(db,b).idNumber,'required')}</div><div class="split">${field('Cash received now ($)','paid','number','0','min="0" step="0.01"')}${field('Security deposit received ($)','deposit','number','0','min="0" step="0.01"')}</div></div>`;submit='Check in';}
-if(action==='checkout'){title='Check out · Room '+currentRoom(b);body=`<div class="detail-grid"><div><small>Room balance</small><strong>${money(balance(db,b))}</strong></div><div><small>Deposit held</small><strong>${money(ledger(db,b.id).deposit)}</strong></div></div><p class="notice">Checkout records the actual departure now. The room will be marked as needing cleaning. Guest history remains available.</p>${balance(db,b)>0?'<label class="check"><input type="checkbox" name="ackBalance" required>Leave this outstanding balance recorded for later collection.</label>':''}${ledger(db,b.id).deposit>0?'<label class="check"><input type="checkbox" name="ackDeposit" required>Leave the security deposit visibly pending. I have not returned it yet.</label>':''}<p class="hint" style="margin-top:15px">Use Record cash first if you are collecting a balance or returning a deposit.</p>`;submit='Confirm checkout';}
-if(action==='cancel'){title='Cancel reservation';body=`<div style="margin-top:20px">${select('Status','status',[['cancelled','Cancelled'],['no-show','No-show']])}${field('Reason','reason','text','','required')}<p class="notice">Any advance stays in the cash history. Use Record cash → Room payment refund if cash is returned.</p></div>`;submit='Update reservation';}
-if(action==='adjust'){title='Adjust charges';body=`<p class="notice" style="margin-top:20px">Enter a negative amount for a discount or credit, and a positive amount for an additional charge. This does not record cash received or returned.</p><div style="margin-top:20px">${field('Adjustment ($)','amount','number','0','required step="0.01"')}${field('Reason','reason','text','','required')}</div>`;}
-if(action==='edit-reservation'){title='Edit reservation · '+b.reference;body=`<div class="notice" style="margin-top:20px">Payments and guest history are preserved. New dates and room type are checked before saving.</div><div class="split" style="margin-top:20px">${field('Arrival','start','datetime-local',b.start,'required')}${field('Checkout','end','datetime-local',b.end,'required')}</div><div class="split">${select('Room type','type',[['one','1 bed'],['two','2 beds']],b.type)}${select('Assigned room (optional)','room',[['','Assign at check-in'],...db.rooms.map(r=>[r.number,r.number+' · '+labelType(r.type)])],b.room)}</div>${field('Default rate for new nights ($)','baseRate','number',b.rates.at(-1).amount/100,'required min="0" step="0.01"')}<div id="edit-rates"></div>${field('Reason for change','reason','text','','required')}`;submit='Save reservation changes';}
-if(action==='rates'){title='Edit nightly rates';body=`<p class="notice" style="margin-top:20px">Every old and new price is kept in the activity history. Changing prices does not change cash already collected.</p>${b.rates.map(r=>`<div class="rate-row"><label for="edit-${r.date}">${fmt(r.date)} night</label><input id="edit-${r.date}" data-rate-date="${r.date}" type="number" min="0" step="0.01" value="${r.amount/100}" required></div>`).join('')}${field('Reason for change','reason','text','','required')}`;}
-if(action==='void'){title='Correct an erroneous cash entry';body=`<p class="notice warn" style="margin-top:20px">Use this only when a receipt was entered incorrectly and cash did not actually move. For cash returned to a guest, record a refund instead. The original entry remains in history, marked void.</p><div style="margin-top:20px">${select('Entry to void','transaction',db.transactions.filter(t=>t.booking===id&&!t.void).map(t=>[t.id,stamp(t.at)+' · '+kindLabel(t.kind)+' · '+money(t.amount)]))}${field('Correction reason','reason','text','','required')}</div>`;submit='Void incorrect entry';}
-if(action==='note'){title='Add a stay note';body=`<div class="field" style="margin-top:20px"><label for="f-note">Note</label><textarea id="f-note" name="note" required></textarea></div>`;}
-modal(title,`<form id="action-form" data-command="${action}" data-id="${id}">${body}${foot(submit)}</form>`);if(action==='extend')updateExtension();if(action==='edit-reservation')updateEditRates();}
-function updateExtension(){const f=$('#action-form');if(!f||f.dataset.command!=='extend')return;const b=db.bookings.find(b=>b.id===f.dataset.id),p=formValues(f);try{const dates=nights(b.start,p.end).filter(d=>!b.rates.some(r=>r.date===d));$('#extension-rates').innerHTML=dates.map(d=>`<div class="rate-row"><label for="ext-${d}">${fmt(d)} night</label><input id="ext-${d}" type="number" min="0" step="0.01" required data-rate-date="${d}" value="${p.baseRate}"></div>`).join('');}catch{$('#extension-rates').innerHTML='Choose a valid new checkout.';}}
-function updateEditRates(){const f=$('#action-form');if(!f||f.dataset.command!=='edit-reservation')return;const b=db.bookings.find(b=>b.id===f.dataset.id),p=formValues(f),old=getRates();try{$('#edit-rates').innerHTML=nights(p.start,p.end).map(date=>`<div class="rate-row"><label for="edit-${date}">${fmt(date)} night</label><input id="edit-${date}" data-rate-date="${date}" type="number" min="0" step="0.01" required value="${(old.find(r=>r.date===date)?.amount??b.rates.find(r=>r.date===date)?.amount??amount(p.baseRate))/100}"></div>`).join('');}catch(e){$('#edit-rates').textContent=e.message;}}
-function staffForm(){modal(mode==='demo'?'Add a sample staff identity':'Create staff account',`<form id="staff-form"><div class="notice" style="margin-top:20px">This account gets the same full access as every other staff member.</div><div style="margin-top:20px">${field('Display name','name','text','','required')}${field('Username','username','text','','required minlength="3" pattern="[a-zA-Z0-9._-]{3,40}"')}${mode==='server'?field('Initial password (15+ characters)','password','password','','required minlength="15" autocomplete="new-password"'):'<p class="hint">Sample identities have no passwords and are not secure accounts.</p>'}</div>${foot('Create account')}</form>`);}
-function download(content,name,type){const url=URL.createObjectURL(new Blob([content],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
-function exportCash(){const csvVal=s=>'"'+String(s??'').replaceAll('"','""').replace(/^[=+@-]/,"'")+'"';const rows=[['Time','Staff','Room at collection','Reservation','Guest','Entry','Amount USD'],...cashSummary(db,collectionFrom,collectionTo,collectionUser).transactions.map(t=>{const b=db.bookings.find(b=>b.id===t.booking);return[t.at,nameUser(t.user),t.room,b.reference,guest(db,b).name,kindLabel(t.kind),(t.amount/100).toFixed(2)];})];download(rows.map(r=>r.map(csvVal).join(',')).join('\r\n'),'staydesk-cash-'+collectionFrom+'.csv','text/csv');}
-document.addEventListener('click',async e=>{const nav=e.target.closest('[data-page]');if(nav){page=nav.dataset.page;close();render();window.scrollTo(0,0);return;}const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action,id=el.dataset.id;try{
-if(a==='close'){close();return;}
-if(a==='demo-login'){actor=id;sessionStorage.setItem('staydesk-user',id);if(!localStorage.getItem(key))localStorage.setItem(key,JSON.stringify(db));render();return;}
-if(a==='logout'){if(mode==='server')await api('logout',{});else sessionStorage.removeItem('staydesk-user');actor=null;close();render();return;}
-if(a==='assign'||a==='reserve'){bookingForm(a==='reserve',id);return;}
-if(a==='room'){showRoom(id);return;}if(a==='stay'){showStay(id);return;}if(a==='guest'){showGuest(id);return;}if(a==='room-history'){showRoomHistory(id);return;}
-if(['collect','transfer','extend','check-in','checkout','cancel','adjust','note','edit-reservation','rates','void'].includes(a)){actionForm(a,id);return;}
-if(a==='room-filter'){roomFilter=id;render();return;}
-if(a==='home-filter'){if(id==='arrivals'){page='reservations';reservationFilter='reserved';}else{roomFilter=id;page='rooms';}render();return;}
-if(a==='history-tab'){historyTab=id;historySearch='';render();return;}
-if(a==='user-cash'){page='cash';collectionUser=id;collectionFrom=collectionTo=today();render();return;}
-if(a==='filter-user'){collectionUser=id;render();return;}
-if(a==='cash-all'){page='cash';collectionUser='';render();return;}
-if(a==='mark-ready'||a==='mark-dirty'||a==='mark-maintenance'){await command('room-status',{room:id,status:{'mark-ready':'ready','mark-dirty':'dirty','mark-maintenance':'maintenance'}[a]});close();render();toast('Room status updated.');return;}
-if(a==='reveal-id'){const b=db.bookings.find(b=>b.id===id);el.replaceWith(Object.assign(document.createElement('strong'),{textContent:guest(db,b).idNumber}));return;}
-if(a==='add-staff'){staffForm();return;}
-if(a==='staff-status'){await command('staff-status',{staffId:id});render();toast('Staff account updated.');return;}
-if(a==='reset-password'){modal('Reset password · '+nameUser(id),`<form id="password-form" data-id="${id}"><div style="margin-top:20px">${field('New password (15+ characters)','password','password','','required minlength="15" autocomplete="new-password"')}<p class="hint">This ends existing sessions for this account.</p></div>${foot('Reset password')}</form>`);return;}
-if(a==='export-cash'){exportCash();return;}if(a==='export-data'){download(JSON.stringify(db,null,2),'staydesk-register-'+today()+'.json','application/json');return;}
-if(a==='reset-demo'){modal('Reset sample workspace',`<p class="notice warn" style="margin-top:20px">This removes your changes in this browser and reloads the fictional sample guests.</p><div class="modal-footer">${btn('Keep changes','close')}${btn('Reset demo data','confirm-reset','',true)}</div>`);return;}
-if(a==='confirm-reset'){db=seed();localStorage.setItem(key,JSON.stringify(db));actor='u1';sessionStorage.setItem('staydesk-user',actor);close();render();toast('Sample workspace reset.');return;}
-if(a==='about'){modal('About this version',`<div class="notice warn" style="margin-top:20px">GitHub Pages preview · fictional data only</div><p class="subtitle">This demo lets you assign rooms, change nightly rates, extend stays, move guests, take cash, manage reservations and explore guest, room and staff histories. Changes are saved in this browser.</p><div class="form-section">For live motel use</div><p class="subtitle">The repository also includes a server version with a shared SQLite database, password accounts, sessions and server-validated transactions. It needs separate server hosting; GitHub Pages cannot run that backend.</p><p class="subtitle">Do not enter real guest names, ID numbers or passwords in this demo. Browser storage can be read or changed by someone using this device.</p>`);return;}
-}catch(err){const box=$('#modal .form-error');if(box)box.textContent=err.message;else toast(err.message);}});
-document.addEventListener('change',e=>{const n=e.target.name;const f=e.target.closest('form');if(f?.id==='booking-form'){if(n==='existing'){const g=db.guests.find(g=>g.id===e.target.value);if(g){['name','phone','idNumber'].forEach(k=>f.elements[k].value=g[k]||'');if(g.idType)f.elements.idType.value=g.idType;}formContext.guestId=g?.id||'';}if(['start','end','pricing','baseRate'].includes(n))updateBookingRates(n==='start'||n==='end');if(['start','end','type'].includes(n))updateRoomOptions();updateTotal();}if(f?.id==='action-form'&&['end','baseRate'].includes(n))updateExtension();if(f?.id==='action-form'&&['start','end','baseRate'].includes(n))updateEditRates();if(n==='cashFrom'){collectionFrom=e.target.value||today();if(collectionTo<collectionFrom)collectionTo=collectionFrom;render();}if(n==='cashTo'){collectionTo=e.target.value||today();if(collectionFrom>collectionTo)collectionFrom=collectionTo;render();}if(n==='cashUser'){collectionUser=e.target.value;render();}if(n==='reservationStatus'){reservationFilter=e.target.value;render();}});
-document.addEventListener('input',e=>{if(e.target.closest('#booking-form')&&(e.target.dataset.rateDate||['paid','fees','deposit'].includes(e.target.name)))updateTotal();});
-document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target,p=formValues(f),err=f.querySelector('.form-error'),submit=f.querySelector('[type=submit]');if(err)err.textContent='';if(submit)submit.disabled=true;try{
-if(f.id==='login-form'){await api('login',p);await load();render();}
-if(f.id==='history-search'){historySearch=p.query;render();}
-if(f.id==='booking-form'){const id=await command('create',{...p,guestId:formContext.guestId,status:formContext.reserve?'reserved':'in-house',rates:getRates(),fees:amount(p.fees),paid:amount(p.paid),deposit:amount(p.deposit)});close();render();showStay(id);toast('Booking saved.');}
-if(f.id==='action-form'){const c=f.dataset.command,id=f.dataset.id;let payload={...p,id};['paid','deposit','amount'].forEach(k=>{if(k in p)payload[k]=amount(p[k]);});['maintenance','ackBalance','ackDeposit'].forEach(k=>payload[k]=p[k]==='on');if(c==='extend'){const b=db.bookings.find(b=>b.id===id);payload.rates=[...b.rates,...getRates()];}if(['rates','edit-reservation'].includes(c))payload.rates=getRates();await command(c,payload);close();render();showStay(id);toast('Stay updated.');}
-if(f.id==='staff-form'){if(mode==='server'){const r=await api('staff',{...p,revision:db.revision});db=r.db;}else await command('add-staff',p);close();render();toast('Staff account created.');}
-if(f.id==='password-form'){await api('password',{staffId:f.dataset.id,password:p.password});close();toast('Password reset. Existing sessions have ended.');if(f.dataset.id===actor){actor=null;render();}}
-}catch(ex){if(err)err.textContent=ex.message;else toast(ex.message);}finally{if(submit)submit.disabled=false;}});
-window.addEventListener('storage',e=>{if(mode==='demo'&&e.key===key&&e.newValue){if(!$('#modal').open){db=JSON.parse(e.newValue);render();}else toast('Another tab updated the register. Your save will check for conflicts.');}});
-setInterval(async()=>{if(!actor||$('#modal').open)return;if(mode==='server'){try{await load();render();}catch{}}else render();},60000);
+import {
+  seed, applyCommand, today, nowLocal, plusDay, nights, total, balance,
+  ledger, guest, currentRoom, cashSummary, category,
+} from './domain.js';
+
+const $ = (selector, root = document) => root.querySelector(selector);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[char]));
+const money = (cents) => new Intl.NumberFormat('en-US', {
+  style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2,
+}).format((Number(cents) || 0) / 100);
+
+// Parse dollars without floating point arithmetic. Every stored amount is cents.
+function amount(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return 0;
+  if (!/^\d+(?:\.\d{0,2})?$/.test(raw)) throw Error('Enter an amount with up to two decimals.');
+  const [whole, fraction = ''] = raw.split('.');
+  const cents = Number(whole) * 100 + Number((fraction + '00').slice(0, 2));
+  if (!Number.isSafeInteger(cents) || cents > 100000000) throw Error('Enter a smaller valid amount.');
+  return cents;
+}
+
+const iconPaths = {
+  home: 'M3 10 12 3l9 7v10H3Z M9 20v-7h6v7', bed: 'M3 18V7 M3 14h18v4 M3 10h6v4 M9 10h10a2 2 0 0 1 2 2v2 M3 18v2 M21 18v2',
+  calendar: 'M4 5h16v16H4Z M8 3v4 M16 3v4 M4 10h16 M8 14h2 M14 14h2 M8 18h2', history: 'M4 8a9 9 0 1 1-1 8 M4 3v5h5 M12 7v6l4 2', cash: 'M3 6h18v13H3Z M3 10h18 M7 15h4',
+  out: 'M10 5H4v14h6 M14 7l5 5-5 5 M8 12h11', plus: 'M12 5v14 M5 12h14', search: 'M10 3a7 7 0 1 1 0 14 7 7 0 0 1 0-14 M15 15l6 6', arrow: 'M9 5l7 7-7 7', check: 'm5 12 4 4L19 6',
+};
+const ico = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${iconPaths[name] || iconPaths.home}"/></svg>`;
+const fmtDate = (value) => value ? new Date(`${value.slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }) : '—';
+const fmtShortDate = (value) => value ? new Date(`${value.slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—';
+const fmtDateTime = (value) => value ? `${fmtDate(value)} · ${value.slice(11, 16)}` : '—';
+const initials = (name) => String(name || 'Boss').split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
+const labelKind = (kind) => ({ payment: 'Room payment', deposit: 'Security deposit', refund: 'Room refund', 'deposit-return': 'Deposit returned', 'deposit-retained': 'Deposit retained' }[kind] || kind);
+const labelStatus = (value) => ({ 'in-house': 'In house', reserved: 'Reserved', 'checked-out': 'Checked out', cancelled: 'Cancelled' }[value] || value);
+const statusClass = (value) => ({ departures: 'orange', 'payment-due': 'red', stayovers: '', reserved: 'blue', 'checked-out': 'gray' }[value] || 'gray');
+const btn = (text, action, id = '', primary = false) => `<button class="btn ${primary ? 'primary' : ''}" data-action="${action}" ${id ? `data-id="${esc(id)}"` : ''}>${text}</button>`;
+const badge = (text, cls = '') => `<span class="badge ${cls}">${esc(text)}</span>`;
+const field = (label, name, type = 'text', value = '', extra = '') => `<div class="field"><label for="f-${name}">${label}</label><input id="f-${name}" name="${name}" type="${type}" value="${esc(value)}" ${extra}></div>`;
+const select = (label, name, options, value = '') => `<div class="field"><label for="f-${name}">${label}</label><select id="f-${name}" name="${name}">${options.map(([v, text]) => `<option value="${esc(v)}" ${v === value ? 'selected' : ''}>${esc(text)}</option>`).join('')}</select></div>`;
+const errorBox = '<div class="form-error" role="alert"></div>';
+const footer = (text = 'Save') => `${errorBox}<div class="modal-footer"><button type="button" class="btn" data-action="close">Cancel</button><button class="btn primary" type="submit">${text}</button></div>`;
+
+let db;
+let actor = null;
+let mode = 'demo';
+let page = 'home';
+let historySearch = '';
+let cashDate = today();
+let toastTimer;
+let formContext = null;
+const key = 'staydesk-demo-v2';
+
+async function api(path, body) {
+  const response = await fetch(`./api/${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json', 'X-Staydesk-Request': '1' } : {},
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin',
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    if (response.status === 409) { await load(); render(); }
+    throw Error(data.error || 'Unable to save.');
+  }
+  return data;
+}
+
+async function load() {
+  if (mode === 'server') {
+    const result = await api('state');
+    db = result.db;
+    actor = result.user;
+    return;
+  }
+  try { db = JSON.parse(localStorage.getItem(key)) || seed(); } catch { db = seed(); }
+  if (!db.staff.some((staff) => staff.id === 'boss' && staff.active)) db = seed();
+  actor = sessionStorage.getItem('staydesk-user') === 'boss' ? 'boss' : null;
+}
+
+async function start() {
+  try {
+    const response = await fetch('./api/health', { cache: 'no-store' });
+    if (response.ok && (await response.json()).service === 'staydesk') mode = 'server';
+  } catch { mode = 'demo'; }
+  try { await load(); } catch { actor = null; }
+  render();
+}
+
+async function command(type, payload) {
+  if (mode === 'server') {
+    const result = await api('command', { command: type, payload, revision: db.revision });
+    db = result.db;
+    return result.id;
+  }
+  const saved = JSON.parse(localStorage.getItem(key) || 'null');
+  if (saved && saved.revision !== db.revision) {
+    db = saved;
+    render();
+    throw Error('Another tab updated the register. Review the latest data and try again.');
+  }
+  const result = applyCommand(db, actor, type, payload);
+  db = result.db;
+  localStorage.setItem(key, JSON.stringify(db));
+  return result.id;
+}
+
+function toast(message) {
+  $('#toast').textContent = message;
+  $('#toast').classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $('#toast').classList.remove('show'), 3500);
+}
+
+function closeModal() {
+  const dialog = $('#modal');
+  if (dialog.open) dialog.close();
+  dialog.innerHTML = '';
+  formContext = null;
+}
+
+function modal(title, body) {
+  const dialog = $('#modal');
+  dialog.innerHTML = `<div class="modal-head"><h2>${esc(title)}</h2><button class="close" data-action="close" aria-label="Close dialog">×</button></div><div class="modal-body">${body}</div>`;
+  if (!dialog.open) dialog.showModal();
+}
+
+function formValues(form) {
+  const values = {};
+  for (const [name, value] of new FormData(form).entries()) {
+    if (values[name] === undefined) values[name] = value;
+    else values[name] = Array.isArray(values[name]) ? [...values[name], value] : [values[name], value];
+  }
+  return values;
+}
+
+function activeStays() { return db.bookings.filter((booking) => booking.status === 'in-house'); }
+function reservations() { return db.bookings.filter((booking) => booking.status === 'reserved').sort((a, b) => a.start.localeCompare(b.start)); }
+function allRooms() {
+  return [...new Set(db.bookings.flatMap((booking) => (booking.segments?.length ? booking.segments.map((segment) => segment.room) : [booking.room]).filter(Boolean)))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+function guestName(booking) { return guest(db, booking)?.name || booking.guestSnapshot?.name || 'Unknown guest'; }
+function currentStatus(booking) { return booking.status === 'in-house' ? category(db, booking) : booking.status; }
+function statusText(booking) {
+  const status = currentStatus(booking);
+  return status === 'departures' ? 'Departure today' : status === 'payment-due' ? 'Payment due' : status === 'stayovers' ? 'Stayover' : labelStatus(status);
+}
+
+function renderLogin() {
+  const serverLogin = mode === 'server';
+  $('#app').innerHTML = `<main class="login"><section class="login-card"><div class="brand"><img src="./favicon.svg" alt="">Staydesk</div><p class="eyebrow">Motel front desk</p><h1>Welcome back</h1><p class="subtitle">One secure Boss account for the whole front desk.</p>${serverLogin ? `<form id="login-form"><div style="margin-top:22px">${field('Username', 'username', 'text', 'boss', 'required autocomplete="username"')}${field('Password', 'password', 'password', '', 'required autocomplete="current-password"')}</div>${footer('Sign in')}</form>` : `<div class="login-users"><button class="login-user" data-action="demo-login" data-id="boss"><span class="avatar">B</span><span><strong>Boss</strong><small>Open the browser demo</small></span>${ico('arrow')}</button></div><div class="notice">This GitHub Pages preview saves fictional data in this browser. Use the server version with a strong password for real guest records.</div>`}</section></main>`;
+}
+
+function render() {
+  if (!actor) { renderLogin(); return; }
+  const nav = [['home', 'home', 'Home'], ['rooms', 'bed', 'Room board'], ['reservations', 'calendar', 'Reservations'], ['history', 'history', 'History'], ['cash', 'cash', 'Cash']];
+  const title = nav.find((item) => item[0] === page)?.[2] || 'Home';
+  $('#app').innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand"><img src="./favicon.svg" alt="">Staydesk</div><div class="nav-label">Front desk</div><nav class="nav" aria-label="Main navigation">${nav.map(([id, icon, text]) => `<button data-page="${id}" class="${page === id ? 'active' : ''}" ${page === id ? 'aria-current="page"' : ''}>${ico(icon)}${text}${id === 'reservations' && reservations().length ? `<span class="count">${reservations().length}</span>` : ''}</button>`).join('')}</nav><div class="side-bottom"><div class="notice" style="background:#1c3c40;color:#b9d2cd;font-size:12px">${mode === 'demo' ? 'Browser demo<br>Cash only · No preloaded rooms' : 'Live register<br>One Boss account · Cash only'}</div><div class="staff-card"><span class="avatar">B</span><div style="font-size:13px">Boss<small>Owner · Full access</small></div><button data-action="logout" aria-label="Sign out">${ico('out')}</button></div></div></aside><main class="main"><header class="topbar"><div class="crumb">Staydesk <span style="margin:0 12px;color:#b6c3c1">/</span> <strong>${title}</strong></div><div class="brand mobile-brand"><img src="./favicon.svg" alt="">Staydesk</div><div class="topbar-right"><span class="date-text">${fmtDate(today())}</span><span class="live">${mode === 'demo' ? 'Browser demo' : 'Live register'}</span><span class="avatar">B</span></div></header>${pageContent()}</main></div>`;
+}
+
+function pageContent() {
+  if (page === 'rooms') return roomBoardPage();
+  if (page === 'reservations') return reservationsPage();
+  if (page === 'history') return historyPage();
+  if (page === 'cash') return cashPage();
+  return homePage();
+}
+
+function homePage() {
+  const stayovers = activeStays().filter((booking) => currentStatus(booking) === 'stayovers');
+  const departures = activeStays().filter((booking) => booking.end.slice(0, 10) === today());
+  const cash = cashSummary(db, today());
+  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Good to see you, Boss</div><h1>Today at a glance</h1><p class="subtitle">The three numbers the front desk needs first.</p></div><div class="actions">${btn(`${ico('plus')} Register guest`, 'register', '', true)}</div></div>${mode === 'demo' ? '<div class="demo-banner"><span><strong>Browser demo</strong> · Data stays on this device and starts empty.</span><button data-action="reset-demo">Clear demo data</button></div>' : ''}<div class="stats"><div class="stat"><div class="stat-top"><span>Stayovers</span><span class="stat-icon">${ico('bed')}</span></div><div class="stat-value">${stayovers.length}</div><div class="stat-foot">Paid guests staying tonight</div></div><div class="stat"><div class="stat-top"><span>Departures today</span><span class="stat-icon">${ico('calendar')}</span></div><div class="stat-value">${departures.length}</div><div class="stat-foot">Guests scheduled to leave</div></div><div class="stat"><div class="stat-top"><span>Cash collected today</span><span class="stat-icon">${ico('cash')}</span></div><div class="stat-value">${money(cash.gross)}</div><div class="stat-foot">Room payments plus deposits</div></div></div><div class="columns"><section class="panel"><div class="panel-head"><div><h2>Current stay rooms</h2><small>Rooms appear after a guest is checked in.</small></div>${btn('Open room board', 'page', 'rooms')}</div>${roomCards()}</section><div><section class="panel"><div class="panel-head"><div><h2>Departures today</h2><small>${fmtDate(today())}</small></div></div>${departureList(departures)}</section><section class="panel"><div class="panel-head"><div><h2>Cash collected today</h2><small>Cash only · exact cents</small></div>${btn('View cash', 'page', 'cash')}</div><div class="cash-hero"><small>Total collected</small><div class="amount">${money(cash.gross)}</div><div class="cash-sub"><span>Room<strong>${money(cash.room)}</strong></span><span>Deposits<strong>${money(cash.deposits)}</strong></span></div></div></section></div></div></div>`;
+}
+
+function roomCards() {
+  const bookings = activeStays().sort((a, b) => currentRoom(a).localeCompare(currentRoom(b), undefined, { numeric: true }));
+  if (!bookings.length) return '<div class="empty">No current stays yet.<br>Register a guest and type any room number to create the first room card.</div>';
+  return `<div class="rooms">${bookings.map((booking) => { const status = currentStatus(booking); return `<button class="room ${status}" data-action="stay" data-id="${booking.id}"><div class="room-top"><span class="room-no">${esc(currentRoom(booking))}</span>${ico('arrow')}</div><div class="room-name">${esc(guestName(booking))}</div><div class="room-status">${esc(statusText(booking))} · out ${esc(booking.end.slice(11, 16))}</div></button>`; }).join('')}</div>`;
+}
+
+function departureList(bookings) {
+  if (!bookings.length) return '<div class="empty">No departures scheduled for today.</div>';
+  return `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room</th><th>Out</th></tr></thead><tbody>${bookings.sort((a, b) => a.end.localeCompare(b.end)).map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || guest(db, booking)?.idNumber || '')}</small></button></td><td><span class="room-label">${esc(currentRoom(booking))}</span></td><td>${esc(booking.end.slice(11, 16))}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function roomBoardPage() {
+  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Live room board</div><h1>Current stay rooms</h1><p class="subtitle">Type a room number when you check someone in. There is no preloaded room list.</p></div><div class="actions">${btn(`${ico('plus')} Register guest`, 'register', '', true)}</div></div><section class="panel">${roomCards()}</section></div>`;
+}
+
+function reservationsPage() {
+  const items = reservations();
+  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Plan ahead</div><h1>Reservations</h1><p class="subtitle">Reserve a manually entered room and check the guest in when they arrive.</p></div><div class="actions">${btn(`${ico('plus')} New reservation`, 'reserve', '', true)}</div></div><section class="panel">${items.length ? `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Room</th><th>Check in</th><th>Check out</th><th>Paid</th><th></th></tr></thead><tbody>${items.map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || '')}</small></button></td><td><span class="room-label">${esc(currentRoom(booking))}</span></td><td>${fmtDateTime(booking.start)}</td><td>${fmtDateTime(booking.end)}</td><td>${money(ledger(db, booking.id).paid)}</td><td>${btn('Open', 'stay', booking.id)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No future reservations yet.</div>'}</section></div>`;
+}
+
+function historyPage() {
+  const query = historySearch.trim().toLowerCase();
+  const people = db.guests.filter((person) => !query || [person.name, person.idNumber, person.phone].some((value) => String(value || '').toLowerCase().includes(query))).sort((a, b) => a.name.localeCompare(b.name));
+  const rooms = allRooms().filter((room) => !query || room.toLowerCase().includes(query));
+  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Search the register</div><h1>Guest and room history</h1><p class="subtitle">Find a person by name or ID, or enter a room number to see every stay.</p></div><div class="actions">${btn(`${ico('plus')} Register guest`, 'register', '', true)}</div></div><section class="panel"><form id="history-search" class="filters"><div class="field search"><label for="history-query">Search guests or rooms</label><input id="history-query" name="query" value="${esc(historySearch)}" placeholder="Name, ID number or room number"></div><button class="btn primary" type="submit">${ico('search')} Search</button></form></section><div class="columns"><section class="panel"><div class="panel-head"><div><h2>Guests</h2><small>${people.length} matching record${people.length === 1 ? '' : 's'}</small></div></div>${people.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>ID number</th><th>Stays</th></tr></thead><tbody>${people.map((person) => `<tr><td><button class="guest-name" data-action="guest" data-id="${person.id}">${esc(person.name)}<small>${esc(person.phone || 'No phone')}</small></button></td><td>${esc(person.idNumber)}</td><td>${db.bookings.filter((booking) => booking.guest === person.id).length}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No guest records match.</div>'}</section><section class="panel"><div class="panel-head"><div><h2>Rooms</h2><small>Room history from the register</small></div></div>${rooms.length ? `<div class="table-wrap"><table><thead><tr><th>Room</th><th>Stays</th><th></th></tr></thead><tbody>${rooms.map((room) => `<tr><td><span class="room-label">${esc(room)}</span></td><td>${db.bookings.filter((booking) => (booking.segments?.some((segment) => segment.room === room) || (!booking.segments?.length && booking.room === room))).length}</td><td>${btn('Open', 'room-history', room)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Room history appears after the first check-in.</div>'}</section></div></div>`;
+}
+
+function cashPage() {
+  const summary = cashSummary(db, cashDate);
+  return `<div class="content"><div class="page-head"><div><div class="eyebrow">Cash register</div><h1>Cash collected</h1><p class="subtitle">Room payments and security deposits recorded for one day.</p></div><div class="actions">${btn(`${ico('plus')} Register guest`, 'register', '', true)}</div></div><section class="panel"><div class="filters"><div class="field"><label for="cash-date">Date</label><input id="cash-date" type="date" value="${esc(cashDate)}"></div></div><div class="stats" style="padding:0 20px 20px;margin-bottom:0"><div class="stat"><div class="stat-top"><span>Total collected</span><span class="stat-icon">${ico('cash')}</span></div><div class="stat-value">${money(summary.gross)}</div><div class="stat-foot">Room payments + deposits</div></div><div class="stat"><div class="stat-top"><span>Cash returned</span><span class="stat-icon">${ico('out')}</span></div><div class="stat-value">${money(summary.returned)}</div><div class="stat-foot">Refunds and returned deposits</div></div><div class="stat"><div class="stat-top"><span>Net cash</span><span class="stat-icon">${ico('check')}</span></div><div class="stat-value">${money(summary.net)}</div><div class="stat-foot">After cash returned</div></div></div></section><section class="panel"><div class="panel-head"><div><h2>Cash entries</h2><small>${summary.transactions.length} entries on ${fmtDate(cashDate)}</small></div></div>${summary.transactions.length ? `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Guest</th><th>Room</th><th>Entry</th><th>Amount</th></tr></thead><tbody>${summary.transactions.slice().sort((a, b) => b.at.localeCompare(a.at)).map((transaction) => { const booking = db.bookings.find((item) => item.id === transaction.booking); return `<tr><td>${esc(transaction.at.slice(11, 16))}</td><td>${booking ? esc(guestName(booking)) : '—'}</td><td>${esc(transaction.room || '—')}</td><td>${esc(labelKind(transaction.kind))}</td><td class="money ${['refund', 'deposit-return'].includes(transaction.kind) ? 'negative' : ''}">${['refund', 'deposit-return'].includes(transaction.kind) ? '−' : ''}${money(transaction.amount)}</td></tr>`; }).join('')}</tbody></table></div>` : '<div class="empty">No cash entries for this date.</div>'}</section></div>`;
+}
+
+function stayHeader(booking) {
+  const person = guest(db, booking) || booking.guestSnapshot || {};
+  const status = currentStatus(booking);
+  return `<div class="detail-grid"><div><small>Guest</small><strong>${esc(person.name || '—')}</strong></div><div><small>ID number</small><strong>${esc(person.idNumber || '—')}</strong></div><div><small>Status</small>${badge(statusText(booking), statusClass(status))}</div><div><small>Room</small><strong>${esc(currentRoom(booking) || 'Not assigned')}</strong></div><div><small>Check in</small><strong>${fmtDateTime(booking.actualIn || booking.start)}</strong></div><div><small>Check out</small><strong>${fmtDateTime(booking.actualOut || booking.end)}</strong></div></div>`;
+}
+
+function showStay(id) {
+  const booking = db.bookings.find((item) => item.id === id);
+  if (!booking) return;
+  const person = guest(db, booking) || booking.guestSnapshot || {};
+  const bookLedger = ledger(db, id);
+  const actions = [];
+  if (booking.status === 'reserved') { actions.push(btn('Check in guest', 'check-in', id, true), btn('Cancel reservation', 'cancel', id)); }
+  if (booking.status === 'in-house') { actions.push(btn('Record cash', 'collect', id, true), btn('Change room', 'transfer', id), btn('Extend stay', 'extend', id), btn('Edit nightly rates', 'rates', id), btn('Check out', 'checkout', id)); }
+  if (booking.status !== 'reserved' && booking.status !== 'cancelled') actions.push(btn('Add note', 'note', id));
+  modal(`${esc(person.name || 'Guest')} · ${esc(booking.reference)}`, `${stayHeader(booking)}<div class="actions" style="margin:4px 0 22px">${actions.join('')}</div><div class="form-section">Stay total</div><div class="form-total"><div class="total-line"><span>Room and other charges</span><strong>${money(total(booking))}</strong></div><div class="total-line"><span>Cash received</span><strong>${money(bookLedger.paid)}</strong></div><div class="total-line"><span>Security deposit held</span><strong>${money(bookLedger.deposit)}</strong></div><div class="total-line large"><span>Balance</span><strong class="${balance(db, booking) > 0 ? 'negative' : ''}">${money(balance(db, booking))}</strong></div></div><div class="form-section">Nightly rates</div><div>${booking.rates.map((rate) => `<div class="rate-row"><span>${fmtShortDate(rate.date)}</span><strong>${money(rate.amount)}</strong></div>`).join('')}</div>${booking.notes ? `<div class="form-section">Notes</div><p class="detail-notes">${esc(booking.notes)}</p>` : ''}<div class="form-section">Cash history</div>${booking.transactions?.length ? '' : ''}${cashRows(booking)}`);
+}
+
+function cashRows(booking) {
+  const entries = db.transactions.filter((transaction) => transaction.booking === booking.id && !transaction.void).sort((a, b) => b.at.localeCompare(a.at));
+  if (!entries.length) return '<div class="empty">No cash recorded yet.</div>';
+  return `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Entry</th><th>Amount</th></tr></thead><tbody>${entries.map((entry) => `<tr><td>${fmtDateTime(entry.at)}</td><td>${esc(labelKind(entry.kind))}</td><td class="money">${money(entry.amount)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function showGuest(id) {
+  const person = db.guests.find((item) => item.id === id);
+  if (!person) return;
+  const stays = db.bookings.filter((booking) => booking.guest === id).sort((a, b) => b.start.localeCompare(a.start));
+  modal(`${esc(person.name)} · Guest history`, `<div class="detail-grid"><div><small>ID type</small><strong>${esc(person.idType || '—')}</strong></div><div><small>ID number</small><strong>${esc(person.idNumber || '—')}</strong></div><div><small>Phone</small><strong>${esc(person.phone || '—')}</strong></div><div><small>Address</small><strong>${esc(person.address || '—')}</strong></div></div><div class="form-section">Every stay</div>${stays.length ? `<div class="table-wrap"><table><thead><tr><th>Dates</th><th>Room</th><th>Status</th><th>Total</th></tr></thead><tbody>${stays.map((booking) => `<tr><td><button class="guest-name" data-action="stay" data-id="${booking.id}">${fmtShortDate(booking.start)} – ${fmtShortDate(booking.end)}</button></td><td>${esc(currentRoom(booking))}</td><td>${badge(labelStatus(booking.status), statusClass(booking.status))}</td><td>${money(total(booking))}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No stays recorded.</div>'}`);
+}
+
+function showRoomHistory(room) {
+  const stays = db.bookings.filter((booking) => booking.segments?.some((segment) => segment.room === room) || (!booking.segments?.length && booking.room === room)).sort((a, b) => b.start.localeCompare(a.start));
+  modal(`Room ${esc(room)} · History`, `<p class="subtitle">Every guest recorded in this room, including previous room moves.</p><div class="form-section">Stays</div>${stays.length ? `<div class="table-wrap"><table><thead><tr><th>Guest</th><th>Stayed</th><th>Status</th><th></th></tr></thead><tbody>${stays.map((booking) => `<tr><td>${esc(guestName(booking))}<small>${esc(booking.guestSnapshot?.idNumber || '')}</small></td><td>${fmtShortDate(booking.start)} – ${fmtShortDate(booking.end)}</td><td>${badge(labelStatus(booking.status), statusClass(booking.status))}</td><td>${btn('Open', 'stay', booking.id)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No stays recorded in this room.</div>'}`);
+}
+
+function registerForm(reserve = false) {
+  const start = reserve ? `${plusDay(today(), 1)}T15:00` : nowLocal();
+  const end = `${plusDay(start.slice(0, 10), 1)}T11:00`;
+  formContext = { reserve };
+  modal(reserve ? 'New reservation' : 'Register guest', `<form id="register-form" data-reserve="${reserve ? 'true' : 'false'}"><div class="form-section">1 · Person details</div><div class="split">${field('Full name', 'name', 'text', '', 'required autocomplete="name"')}${select('ID type', 'idType', [['passport', 'Passport'], ['national-id', 'National ID'], ['driver-license', 'Driver license'], ['other', 'Other']], 'national-id')}${field('ID number', 'idNumber', 'text', '', 'required')}${field('Phone (optional)', 'phone', 'tel', '', 'autocomplete="tel"')}</div>${field('Address (optional)', 'address') }<div class="form-section">2 · Stay details</div><div class="split">${field('Check-in date and time', 'start', 'datetime-local', start, 'required')}${field('Checkout date and time', 'end', 'datetime-local', end, 'required')}</div><div class="split">${select('Pricing', 'pricing', [['same', 'Same rate for every night'], ['nightly', 'Different rate by night']], 'same')}${field('Rate per night', 'baseRate', 'number', '100.00', 'required min="0" step="0.01" inputmode="decimal"')}</div><div id="rate-list"></div><div id="register-rate-summary" class="notice"></div><div class="split">${field('Other charges (optional)', 'fees', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}${field(reserve ? 'Cash paid now (optional)' : 'Cash received now', 'paid', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}</div>${field('Security deposit (optional)', 'deposit', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}<div class="form-total"><div class="total-line"><span>Total stay charges</span><strong id="register-total">$0.00</strong></div><div class="total-line"><span>Balance after cash received</span><strong id="register-balance">$0.00</strong></div></div><div class="form-section">3 · Assign room</div>${field('Room number', 'room', 'text', '', 'required inputmode="numeric"')}<p class="hint">Type any room number. It will appear on the room board after check-in. The system prevents overlapping stays in the same room.</p>${field('Notes (optional)', 'notes', 'text', '')}${footer(reserve ? 'Save reservation' : 'Check in guest')}</form>`);
+  updateRegisterForm();
+}
+
+function updateRegisterForm() {
+  const form = $('#register-form');
+  if (!form) return;
+  const oldValues = Object.fromEntries([...form.querySelectorAll('[data-rate-date]')].map((input) => [input.dataset.rateDate, input.value]));
+  const start = form.elements.start.value;
+  const end = form.elements.end.value;
+  const list = $('#rate-list');
+  try {
+    const dates = nights(start, end);
+    if (form.elements.pricing.value === 'nightly') {
+      list.innerHTML = `<div class="form-section">Nightly prices</div>${dates.map((date) => `<div class="rate-row"><label for="rate-${date}">${fmtShortDate(date)} night</label><input id="rate-${date}" data-rate-date="${date}" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(oldValues[date] ?? form.elements.baseRate.value ?? '100.00')}" required></div>`).join('')}`;
+    } else list.innerHTML = '';
+    updateRegisterTotal();
+  } catch (error) {
+    list.innerHTML = `<p class="hint">${esc(error.message)}</p>`;
+    $('#register-rate-summary').textContent = 'Enter a valid checkout after check-in.';
+    $('#register-total').textContent = '$0.00';
+    $('#register-balance').textContent = '$0.00';
+  }
+}
+
+function registerRates(form) {
+  const dates = nights(form.elements.start.value, form.elements.end.value);
+  if (form.elements.pricing.value === 'same') {
+    const rate = amount(form.elements.baseRate.value);
+    return dates.map((date) => ({ date, amount: rate }));
+  }
+  return dates.map((date) => ({ date, amount: amount(form.querySelector(`[data-rate-date="${date}"]`)?.value) }));
+}
+
+function updateRegisterTotal() {
+  const form = $('#register-form');
+  if (!form) return;
+  try {
+    const rates = registerRates(form);
+    const fees = amount(form.elements.fees.value);
+    const paid = amount(form.elements.paid.value);
+    const charge = rates.reduce((sum, rate) => sum + rate.amount, 0) + fees;
+    $('#register-rate-summary').textContent = `${rates.length} night${rates.length === 1 ? '' : 's'} · ${form.elements.pricing.value === 'same' ? money(rates[0]?.amount || 0) + ' each night' : 'nightly rates entered'}`;
+    $('#register-total').textContent = money(charge);
+    $('#register-balance').textContent = money(charge - paid);
+  } catch {
+    $('#register-rate-summary').textContent = 'Enter valid nightly prices.';
+  }
+}
+
+function actionForm(action, id) {
+  const booking = db.bookings.find((item) => item.id === id);
+  if (!booking) return;
+  let title = 'Update stay';
+  let body = '';
+  let submit = 'Save';
+  if (action === 'collect') {
+    title = 'Record cash'; submit = 'Record cash';
+    body = `${select('Cash entry', 'kind', [['payment', 'Room payment'], ['deposit', 'Security deposit'], ['refund', 'Room refund'], ['deposit-return', 'Return security deposit'], ['deposit-retained', 'Retain security deposit']], 'payment')}${field('Amount', 'amount', 'number', '', 'required min="0.01" step="0.01" inputmode="decimal"')}${field('Reason or note', 'note', 'text', '', 'required')}`;
+  } else if (action === 'transfer') {
+    title = 'Change room'; submit = 'Move guest';
+    body = `<div class="notice">The current room is <strong>${esc(currentRoom(booking))}</strong>. Room history will keep both room numbers.</div>${field('New room number', 'room', 'text', '', 'required inputmode="numeric"')}${field('Reason for move', 'reason', 'text', '', 'required')}`;
+  } else if (action === 'extend') {
+    title = 'Extend stay'; submit = 'Extend stay';
+    const dates = nights(booking.start, booking.end);
+    body = `${field('New checkout date and time', 'end', 'datetime-local', booking.end, 'required')}${field('Cash received for extension', 'paid', 'number', '0.00', 'min="0" step="0.01" inputmode="decimal"')}<div class="form-section">New nightly prices</div><div id="action-rates">${dates.map((date) => `<div class="rate-row"><label>${fmtShortDate(date)} night</label><input type="number" value="${(booking.rates.find((rate) => rate.date === date)?.amount || 0) / 100}" disabled></div>`).join('')}</div><p class="hint">Existing nights stay at their saved prices. Enter prices only for added nights.</p>`;
+  } else if (action === 'rates') {
+    title = 'Edit nightly rates'; submit = 'Save rates';
+    body = `<div id="action-rates">${booking.rates.map((rate) => `<div class="rate-row"><label for="rate-${rate.date}">${fmtShortDate(rate.date)} night</label><input id="rate-${rate.date}" data-rate-date="${rate.date}" type="number" min="0" step="0.01" value="${(rate.amount / 100).toFixed(2)}" required></div>`).join('')}</div>${field('Reason for change', 'reason', 'text', '', 'required')}`;
+  } else if (action === 'checkout') {
+    title = 'Check out guest'; submit = 'Complete checkout';
+    body = `<div class="notice">Balance due: <strong>${money(Math.max(balance(db, booking), 0))}</strong> · Deposit held: <strong>${money(ledger(db, booking.id).deposit)}</strong></div><label class="check"><input type="checkbox" name="ackBalance" ${balance(db, booking) <= 0 ? 'checked' : ''}> I have collected or acknowledged any remaining room balance.</label><label class="check"><input type="checkbox" name="ackDeposit" ${ledger(db, booking.id).deposit === 0 ? 'checked' : ''}> I have returned, retained, or acknowledged the security deposit.</label>`;
+  } else {
+    title = 'Add a stay note'; submit = 'Add note'; body = `<div class="field"><label for="f-note">Note</label><textarea id="f-note" name="note" required></textarea></div>`;
+  }
+  modal(title, `<form id="action-form" data-command="${action}" data-id="${id}">${body}${footer(submit)}</form>`);
+  if (action === 'extend') updateExtendRates();
+}
+
+function updateExtendRates() {
+  const form = $('#action-form');
+  if (!form || form.dataset.command !== 'extend') return;
+  const booking = db.bookings.find((item) => item.id === form.dataset.id);
+  const old = Object.fromEntries([...form.querySelectorAll('[data-rate-date]')].map((input) => [input.dataset.rateDate, input.value]));
+  try {
+    const dates = nights(booking.start, form.elements.end.value);
+    const added = dates.filter((date) => !booking.rates.some((rate) => rate.date === date));
+    $('#action-rates').innerHTML = `${booking.rates.map((rate) => `<div class="rate-row"><label>${fmtShortDate(rate.date)} night</label><input type="number" value="${(rate.amount / 100).toFixed(2)}" disabled></div>`).join('')}${added.map((date) => `<div class="rate-row"><label for="rate-${date}">${fmtShortDate(date)} night</label><input id="rate-${date}" data-rate-date="${date}" type="number" min="0" step="0.01" value="${esc(old[date] ?? '100.00')}" required></div>`).join('')}`;
+  } catch { $('#action-rates').innerHTML = '<p class="hint">Choose a later checkout date.</p>'; }
+}
+
+function resetDemo() {
+  if (mode !== 'demo') return;
+  db = seed();
+  localStorage.setItem(key, JSON.stringify(db));
+  toast('Demo data cleared.');
+  render();
+}
+
+document.addEventListener('click', async (event) => {
+  const pageButton = event.target.closest('[data-page]');
+  if (pageButton) {
+    page = pageButton.dataset.page;
+    closeModal();
+    render();
+    window.scrollTo(0, 0);
+    return;
+  }
+  const element = event.target.closest('[data-action]');
+  if (!element) return;
+  const action = element.dataset.action;
+  const id = element.dataset.id;
+  try {
+    if (action === 'close') { closeModal(); return; }
+    if (action === 'demo-login') { actor = 'boss'; sessionStorage.setItem('staydesk-user', 'boss'); if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(db)); render(); return; }
+    if (action === 'logout') { if (mode === 'server') await api('logout', {}); else sessionStorage.removeItem('staydesk-user'); actor = null; closeModal(); render(); return; }
+    if (action === 'register') { registerForm(false); return; }
+    if (action === 'reserve') { registerForm(true); return; }
+    if (action === 'page') { page = id; closeModal(); render(); return; }
+    if (action === 'stay') { showStay(id); return; }
+    if (action === 'guest') { showGuest(id); return; }
+    if (action === 'room-history') { showRoomHistory(id); return; }
+    if (['collect', 'transfer', 'extend', 'checkout', 'rates', 'note'].includes(action)) { actionForm(action, id); return; }
+    if (action === 'check-in') { await command('check-in', { id }); closeModal(); page = 'home'; render(); showStay(id); toast('Guest checked in.'); return; }
+    if (action === 'cancel') { await command('cancel', { id }); closeModal(); render(); toast('Reservation cancelled.'); return; }
+    if (action === 'reset-demo') { resetDemo(); return; }
+  } catch (error) {
+    const errorElement = $('#modal .form-error');
+    if (errorElement) errorElement.textContent = error.message;
+    else toast(error.message);
+  }
+});
+
+document.addEventListener('change', (event) => {
+  const form = event.target.closest('form');
+  if (form?.id === 'register-form' && ['start', 'end', 'pricing', 'baseRate'].includes(event.target.name)) updateRegisterForm();
+  if (form?.id === 'action-form' && form.dataset.command === 'extend' && event.target.name === 'end') updateExtendRates();
+  if (event.target.id === 'cash-date') { cashDate = event.target.value || today(); render(); }
+});
+
+document.addEventListener('input', (event) => {
+  if (event.target.closest('#register-form')) updateRegisterTotal();
+});
+
+document.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  const values = formValues(form);
+  const errorElement = form.querySelector('.form-error');
+  const submit = form.querySelector('[type="submit"]');
+  if (errorElement) errorElement.textContent = '';
+  if (submit) submit.disabled = true;
+  try {
+    if (form.id === 'login-form') { await api('login', values); await load(); render(); return; }
+    if (form.id === 'history-search') { historySearch = values.query || ''; render(); return; }
+    if (form.id === 'register-form') {
+      const rates = registerRates(form);
+      const id = await command('create', {
+        status: form.dataset.reserve === 'true' ? 'reserved' : 'in-house', name: values.name, idType: values.idType,
+        idNumber: values.idNumber, phone: values.phone, address: values.address, room: values.room,
+        start: values.start, end: values.end, rates, fees: amount(values.fees), paid: amount(values.paid), deposit: amount(values.deposit), notes: values.notes,
+      });
+      closeModal(); page = form.dataset.reserve === 'true' ? 'reservations' : 'home'; render(); showStay(id); toast(form.dataset.reserve === 'true' ? 'Reservation saved.' : 'Guest checked in.'); return;
+    }
+    if (form.id === 'action-form') {
+      const commandName = form.dataset.command;
+      const id = form.dataset.id;
+      const payload = { id, ...values };
+      if (commandName === 'collect') payload.amount = amount(values.amount);
+      if (commandName === 'extend') {
+        const booking = db.bookings.find((item) => item.id === id);
+        const dates = nights(booking.start, values.end);
+        payload.rates = [...booking.rates, ...dates.filter((date) => !booking.rates.some((rate) => rate.date === date)).map((date) => ({ date, amount: amount(form.querySelector(`[data-rate-date="${date}"]`)?.value) }))];
+        payload.paid = amount(values.paid);
+      }
+      if (commandName === 'rates') {
+        payload.rates = bookingRatesFromForm(form, nights(db.bookings.find((item) => item.id === id).start, db.bookings.find((item) => item.id === id).end));
+      }
+      if (commandName === 'checkout') { payload.ackBalance = values.ackBalance === 'on'; payload.ackDeposit = values.ackDeposit === 'on'; }
+      await command(commandName, payload);
+      closeModal(); render(); showStay(id); toast('Stay updated.'); return;
+    }
+  } catch (error) {
+    if (errorElement) errorElement.textContent = error.message;
+    else toast(error.message);
+  } finally { if (submit) submit.disabled = false; }
+});
+
+function bookingRatesFromForm(form, dates) {
+  return dates.map((date) => ({ date, amount: amount(form.querySelector(`[data-rate-date="${date}"]`)?.value) }));
+}
+
+window.addEventListener('storage', (event) => {
+  if (mode === 'demo' && event.key === key && event.newValue && !$('#modal').open) { db = JSON.parse(event.newValue); render(); }
+});
+
+setInterval(async () => {
+  if (!actor || $('#modal').open) return;
+  if (mode === 'server') { try { await load(); render(); } catch { /* keep the last good view */ } }
+  else render();
+}, 60000);
+
 start();

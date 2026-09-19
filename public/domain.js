@@ -1,74 +1,290 @@
-// Shared business rules. Monetary values are integer cents. Local times use motel timezone.
+// Staydesk business rules. Store every amount as integer cents.
 export const TZ = 'America/Los_Angeles';
-export function nowLocal(){const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;}
-export const today=()=>nowLocal().slice(0,10);
-export function plusDay(day,n){const d=new Date(day.slice(0,10)+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);}
-export function nights(start,end){if(!validDate(start)||!validDate(end)||end<=start)throw Error('Checkout must be after check-in.');const a=[];let d=start.slice(0,10);while(d<end.slice(0,10)){a.push(d);d=plusDay(d,1);if(a.length>366)throw Error('Maximum stay is 366 nights.');}return a.length?a:[start.slice(0,10)];}
-export function validDate(s){return typeof s==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)&&Number.isFinite(Date.parse(s))&&s.slice(11,13)<='23'&&s.slice(14)<='59'&&new Date(s.slice(0,10)+'T12:00Z').toISOString().slice(0,10)===s.slice(0,10);}
-export const uid=()=>crypto.randomUUID();
-const req=(ok,msg)=>{if(!ok)throw Error(msg);};
-const text=(s,max=200)=>String(s||'').trim().slice(0,max);
-const cents=(n)=>{req(Number.isSafeInteger(n)&&n>=0&&n<=100000000,'Enter a valid non-negative cash amount.');return n;};
-export const currentRoom=b=>b.segments?.at(-1)?.room||b.room||'';
-export const total=b=>b.rates.reduce((a,r)=>a+r.amount,0)+(b.fees||0)+(b.adjustments||[]).reduce((a,r)=>a+r.amount,0);
-export function ledger(db,id){const t=db.transactions.filter(t=>t.booking===id&&!t.void);const sum=k=>t.filter(t=>t.kind===k).reduce((a,t)=>a+t.amount,0);return{paid:sum('payment')-sum('refund'),deposit:sum('deposit')-sum('deposit-return')-sum('deposit-retained'),refunded:sum('refund')};}
-export const balance=(db,b)=>total(b)-ledger(db,b.id).paid;
-export const guest=(db,b)=>db.guests.find(g=>g.id===b.guest);
-const overlaps=(a,z,b,y)=>a<y&&b<z;
-function interval(b,now){return [b.status==='in-house'?(b.actualIn||b.start):b.start,b.status==='in-house'&&b.end<now?plusDay(now,1)+'T11:00':b.end];}
-export function roomAvailable(db,room,start,end,exclude='',now=nowLocal()) {const r=db.rooms.find(r=>r.number===room);if(!r||r.status==='maintenance')return false;return !db.bookings.some(b=>{if(b.id===exclude||!['reserved','in-house'].includes(b.status)||currentRoom(b)!==room)return false;const [a,z]=interval(b,now);return overlaps(start,end,a,z)||(b.status==='in-house'&&start<=now);});}
-export function typeAvailable(db,type,start,end,exclude='',now=nowLocal()) {const capacity=db.rooms.filter(r=>r.type===type&&r.status!=='maintenance').length;const active=db.bookings.filter(b=>b.id!==exclude&&['reserved','in-house'].includes(b.status)&&b.type===type);const points=[start,...active.map(b=>interval(b,now)[0]).filter(a=>a>start&&a<end)];return points.every(p=>active.filter(b=>{const [a,z]=interval(b,now);return a<=p&&z>p;}).length<capacity);}
-export function cashSummary(db,from,to=from,user=''){const t=db.transactions.filter(t=>!t.void&&t.at.slice(0,10)>=from&&t.at.slice(0,10)<=to&&(!user||t.user===user));const sum=k=>t.filter(t=>t.kind===k).reduce((a,t)=>a+t.amount,0);const room=sum('payment'),deposits=sum('deposit'),returned=sum('refund')+sum('deposit-return');return{room,deposits,gross:room+deposits,returned,net:room+deposits-returned,transactions:t};}
-export function category(db,b){if(b.status!=='in-house')return b.status;if(b.end.slice(0,10)<=today())return'departures';const incurred=b.rates.filter(r=>r.date<=today()).reduce((a,r)=>a+r.amount,0)+(b.fees||0);return ledger(db,b.id).paid>=Math.min(total(b),incurred)?'stayovers':'payment-due';}
-function prices(p,start,end){const dates=nights(start,end);req(Array.isArray(p)&&p.length===dates.length,'Enter one rate for each night.');return dates.map((date,i)=>{req(p[i].date===date,'Nightly dates do not match the stay.');return{date,amount:cents(p[i].amount)};});}
-function transact(db,b,kind,amount,user,now,note='',original=''){if(!amount)return;db.transactions.push({id:uid(),booking:b.id,room:currentRoom(b),kind,amount:cents(amount),user,at:now,note:text(note,1000),original,void:false});}
-function addAudit(db,user,action,booking,now,detail){db.activity.push({id:uid(),user,action,booking,at:now,detail:text(detail,2000)});}
-export function applyCommand(state,actor,command,p={},now=nowLocal()){
- const db=structuredClone(state);req(db.staff.some(s=>s.id===actor&&s.active),'Sign in with an active staff account.');let b=p.id?db.bookings.find(b=>b.id===p.id):null;let detail='';
- if(command==='create'){
-  req(['reserved','in-house'].includes(p.status),'Choose reservation or check-in.');nights(p.start,p.end);req(['one','two'].includes(p.type),'Choose a room type.');req(typeAvailable(db,p.type,p.start,p.end,'',now),'No rooms of this type are available for all selected dates.');
-  if(p.room){req(db.rooms.some(r=>r.number===p.room&&r.type===p.type),'Room type does not match.');req(roomAvailable(db,p.room,p.start,p.end,'',now),'Room is already assigned for those dates.');}
-  if(p.status==='in-house'){req(p.start<=now,'Check-in cannot be in the future. Create a reservation instead.');req(p.room&&db.rooms.find(r=>r.number===p.room)?.status==='ready','Select a ready room.');req(text(p.idNumber),'ID number is required at check-in.');}
-  req(text(p.name),'Guest name is required.');let g=p.guestId?db.guests.find(g=>g.id===p.guestId):null;req(!p.guestId||g,'Guest not found.');if(!g){g={id:uid(),name:text(p.name),idType:text(p.idType),idNumber:text(p.idNumber),phone:text(p.phone),address:text(p.address)};db.guests.push(g);}else if(p.idNumber){g.idNumber=text(p.idNumber);g.idType=text(p.idType);}
-  b={id:uid(),reference:'MD-'+String(db.bookings.length+1001),guest:g.id,guestSnapshot:structuredClone(g),type:p.type,room:p.room||'',start:p.start,end:p.end,actualIn:p.status==='in-house'?p.start:null,actualOut:null,status:p.status,rates:prices(p.rates,p.start,p.end),fees:cents(p.fees||0),adjustments:[],notes:text(p.notes,2000),createdBy:actor,assignedBy:p.status==='in-house'?actor:null,segments:p.status==='in-house'?[{room:p.room,start:p.start,end:null}]:[]};db.bookings.push(b);transact(db,b,'payment',p.paid||0,actor,now);transact(db,b,'deposit',p.deposit||0,actor,now);detail=`${b.reference} · ${p.room||p.type+' bed reservation'}`;
- }else if(command==='room-status'){
-  const r=db.rooms.find(r=>r.number===p.room);req(r,'Room not found.');req(['ready','dirty','maintenance'].includes(p.status),'Invalid room status.');req(!db.bookings.some(b=>b.status==='in-house'&&currentRoom(b)===r.number),'Check out or transfer this guest first.');if(p.status==='maintenance')req(!db.bookings.some(b=>b.status==='reserved'&&(b.room===r.number||b.type===r.type)),'Resolve upcoming reservations for this room type before blocking inventory.');r.status=p.status;detail=`Room ${r.number}: ${p.status}`;
- }else if(command==='add-staff'){
-  req(text(p.name),'Enter a staff name.');req(!db.staff.some(s=>s.username===text(p.username).toLowerCase()),'Username already exists.');req(/^[a-z0-9._-]{3,40}$/.test(text(p.username).toLowerCase()),'Username must be 3–40 letters, numbers, dots, hyphens or underscores.');db.staff.push({id:p.staffId||uid(),name:text(p.name),username:text(p.username).toLowerCase(),active:true});detail=`Account created: ${text(p.username)}`;
- }else if(command==='staff-status'){
-  const s=db.staff.find(s=>s.id===p.staffId);req(s,'Staff account not found.');req(s.id!==actor,'You cannot deactivate your own current account.');s.active=!s.active;detail=`${s.name}: ${s.active?'active':'inactive'}`;
- }else{
-  req(b,'Stay or reservation not found.');
-  if(command==='collect'){
-   req(['payment','deposit','refund','deposit-return','deposit-retained'].includes(p.kind),'Invalid cash entry.');req(p.amount>0,'Amount must be greater than zero.');cents(p.amount);
-   if(['deposit-return','deposit-retained'].includes(p.kind))req(p.amount<=ledger(db,b.id).deposit,'Amount exceeds the deposit held.');
-   if(p.kind==='refund')req(p.amount<=ledger(db,b.id).paid,'Refund exceeds room cash received.');
-   if(['refund','deposit-return','deposit-retained'].includes(p.kind))req(text(p.note),'Enter a reason for the return or retention.');
-   transact(db,b,p.kind,p.amount,actor,now,p.note,p.original||'');detail=`${p.kind}: ${(p.amount/100).toFixed(2)} · ${p.note||''}`;
-  }else if(command==='transfer'){
-   req(b.status==='in-house','Only checked-in guests can transfer rooms.');req(p.room!==currentRoom(b),'Select a different room.');req(text(p.reason),'Enter the transfer reason.');req(b.end>now,'Extend an overdue stay before transferring.');const r=db.rooms.find(r=>r.number===p.room);req(r&&r.status==='ready','Select a ready room.');req(roomAvailable(db,p.room,now,b.end,b.id,now),'Destination room is unavailable.');req(typeAvailable(db,r.type,now,b.end,b.id,now),'Destination room type has no remaining capacity.');const old=currentRoom(b);db.rooms.find(r=>r.number===old).status=p.maintenance?'maintenance':'dirty';b.segments.at(-1).end=now;b.segments.push({room:p.room,start:now,end:null});b.room=p.room;b.type=r.type;detail=`${old} → ${p.room} · ${p.reason}`;
-  }else if(command==='extend'){
-   req(['reserved','in-house'].includes(b.status),'This stay is closed.');req(p.end>b.end,'New checkout must be later than the current checkout.');req(typeAvailable(db,b.type,b.start,p.end,b.id,now),'No capacity for this extension.');if(currentRoom(b))req(roomAvailable(db,currentRoom(b),b.start,p.end,b.id,now),'Room is already reserved during the extension.');const next=prices(p.rates,b.start,p.end);for(const old of b.rates)req(next.find(r=>r.date===old.date)?.amount===old.amount,'An extension must preserve existing nightly rates.');detail=`Checkout ${b.end} → ${p.end}`;b.end=p.end;b.rates=next;transact(db,b,'payment',p.paid||0,actor,now);
-  }else if(command==='check-in'){
-   req(b.status==='reserved','Only reserved bookings can check in.');req(b.start.slice(0,10)<=now.slice(0,10)&&b.end>now,'Check-in is available on arrival day, before scheduled checkout.');req(text(p.idNumber),'ID number is required.');const r=db.rooms.find(r=>r.number===p.room);req(r&&r.type===b.type&&r.status==='ready','Select a ready room of the booked type.');req(roomAvailable(db,p.room,now,b.end,b.id,now),'Room is unavailable.');req(typeAvailable(db,b.type,now,b.end,b.id,now),'Room type is unavailable.');b.status='in-house';b.room=p.room;b.actualIn=now;b.assignedBy=actor;b.segments=[{room:p.room,start:now,end:null}];const g=guest(db,b);g.idNumber=text(p.idNumber);g.idType=text(p.idType);b.guestSnapshot=structuredClone(g);transact(db,b,'payment',p.paid||0,actor,now);transact(db,b,'deposit',p.deposit||0,actor,now);detail=`Checked into ${p.room}`;
-  }else if(command==='checkout'){
-   req(b.status==='in-house','Guest is not checked in.');req(balance(db,b)<=0||p.ackBalance,'Acknowledge the outstanding balance before checkout.');req(ledger(db,b.id).deposit===0||p.ackDeposit,'Resolve or acknowledge the held deposit before checkout.');b.status='checked-out';b.actualOut=now;b.segments.at(-1).end=now;db.rooms.find(r=>r.number===currentRoom(b)).status='dirty';detail='Actual checkout recorded; room needs cleaning.';
-  }else if(command==='cancel'){
-   req(b.status==='reserved','Only future reservations can be cancelled.');req(text(p.reason),'Enter a cancellation reason.');req(['cancelled','no-show'].includes(p.status),'Invalid cancellation type.');b.status=p.status;detail=p.reason;
-  }else if(command==='adjust'){
-   req(text(p.reason),'Enter a correction reason.');req(Number.isSafeInteger(p.amount)&&Math.abs(p.amount)<=100000000,'Enter a valid adjustment.');req(total(b)+p.amount>=0,'Charges cannot be negative.');b.adjustments.push({id:uid(),amount:p.amount,reason:text(p.reason),user:actor,at:now});detail=`Charge adjustment ${(p.amount/100).toFixed(2)}: ${p.reason}`;
-  }else if(command==='edit-reservation'){
-   req(b.status==='reserved','Only reserved bookings can change dates or room type.');req(text(p.reason),'Enter a reason for the change.');nights(p.start,p.end);req(['one','two'].includes(p.type),'Choose a room type.');req(typeAvailable(db,p.type,p.start,p.end,b.id,now),'No capacity for the new dates.');if(p.room){req(db.rooms.some(r=>r.number===p.room&&r.type===p.type),'Room type does not match.');req(roomAvailable(db,p.room,p.start,p.end,b.id,now),'Room is unavailable for the new dates.');}detail=`Reservation changed: ${b.start}–${b.end}, ${b.type}, room ${b.room||'unassigned'}, rates ${JSON.stringify(b.rates)} → ${p.start}–${p.end}, ${p.type}, room ${p.room||'unassigned'}, rates ${JSON.stringify(p.rates)}. ${p.reason}`;b.start=p.start;b.end=p.end;b.type=p.type;b.room=p.room||'';b.rates=prices(p.rates,p.start,p.end);
-  }else if(command==='rates'){
-   req(text(p.reason),'Enter the reason for changing agreed rates.');const next=prices(p.rates,b.start,b.end);detail=`Nightly rates ${JSON.stringify(b.rates)} → ${JSON.stringify(next)}. ${p.reason}`;b.rates=next;
-  }else if(command==='void'){
-   const t=db.transactions.find(t=>t.id===p.transaction&&t.booking===b.id);req(t&&!t.void,'Select an active transaction.');req(text(p.reason),'Enter a correction reason.');t.void=true;t.voidedBy=actor;t.voidedAt=now;t.voidReason=text(p.reason);req(ledger(db,b.id).paid>=0&&ledger(db,b.id).deposit>=0,'Correct related returns first; this void would make the ledger negative.');detail=`Voided ${t.kind} ${(t.amount/100).toFixed(2)} from ${t.at}: ${p.reason}`;
-  }else if(command==='note'){
-   req(text(p.note),'Enter a note.');b.notes+=(b.notes?'\n':'')+text(p.note,2000);detail=p.note;
-  }else throw Error('Unknown action.');
- }
- addAudit(db,actor,command,b?.id||'',now,detail);db.revision=(db.revision||0)+1;return{db,id:b?.id};
+
+export function nowLocal() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: TZ,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date()).map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 }
-export function seed(){const d=today(),db={version:1,revision:0,rooms:Array.from({length:16},(_,i)=>({number:String(101+i),type:i<9?'one':'two',status:i===14?'dirty':i===15?'maintenance':'ready',rate:i<9?10000:12000})),staff:[{id:'u1',name:'User 1',username:'user1',active:true},{id:'u2',name:'User 2',username:'user2',active:true},{id:'u3',name:'User 3',username:'user3',active:true}],guests:[],bookings:[],transactions:[],activity:[]};
- const names=['Alex Morgan','Jordan Lee','Sam Rivera','Taylor Brooks','Casey Patel','Jamie Chen','Riley Adams','Avery Carter','Drew Wilson'];names.forEach((name,i)=>{const start=plusDay(d,-(i%3+1))+'T15:00',end=plusDay(d,i<2?0:i%3+1)+'T11:00';const rates=nights(start,end).map(date=>({date,amount:[5,6].includes(new Date(date+'T12:00Z').getUTCDay())?11000:10000}));const g={id:'g'+i,name,idType:'Driver license',idNumber:'DEMO-'+String(8000+i),phone:'555-010'+i,address:'Sample guest — fictional'};db.guests.push(g);const b={id:'b'+i,reference:'MD-'+(1001+i),guest:g.id,guestSnapshot:{...g},type:'one',room:String(101+i),start,end,actualIn:start,actualOut:null,status:'in-house',rates,fees:0,adjustments:[],notes:i===0?'Requested a quiet room.':'',createdBy:'u'+(i%3+1),assignedBy:'u'+(i%3+1),segments:[{room:String(101+i),start,end:null}]};db.bookings.push(b);transact(db,b,'payment',i===4?10000:total(b),b.createdBy,i<3?d+'T08:'+String(10+i*10):start);if(i%3===0)transact(db,b,'deposit',5000,b.createdBy,start);});
- ['Cameron Scott','Robin Hayes','Quinn Davis'].forEach((name,i)=>{const g={id:'rg'+i,name,idType:'',idNumber:'',phone:'555-012'+i,address:''};db.guests.push(g);const start=plusDay(d,i)+'T15:00',end=plusDay(d,i+2)+'T11:00';const b={id:'r'+i,reference:'MD-'+(1010+i),guest:g.id,guestSnapshot:{...g},type:'two',room:'',start,end,actualIn:null,actualOut:null,status:'reserved',rates:nights(start,end).map(date=>({date,amount:12000})),fees:0,adjustments:[],notes:'Advance paid in cash.',createdBy:'u'+(i+1),assignedBy:null,segments:[]};db.bookings.push(b);transact(db,b,'payment',5000,b.createdBy,d+'T09:'+String(10+i*10));});return db;}
+
+export const today = () => nowLocal().slice(0, 10);
+
+export function plusDay(day, count) {
+  const date = new Date(`${day.slice(0, 10)}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + count);
+  return date.toISOString().slice(0, 10);
+}
+
+export function validDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return false;
+  const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
+  return Number.isFinite(date.getTime())
+    && date.toISOString().slice(0, 10) === value.slice(0, 10)
+    && Number(value.slice(11, 13)) <= 23
+    && Number(value.slice(14, 16)) <= 59;
+}
+
+export function nights(start, end) {
+  if (!validDate(start) || !validDate(end) || end <= start) {
+    throw Error('Checkout must be after check-in.');
+  }
+  const result = [];
+  let date = start.slice(0, 10);
+  while (date < end.slice(0, 10)) {
+    result.push(date);
+    date = plusDay(date, 1);
+    if (result.length > 366) throw Error('Maximum stay is 366 nights.');
+  }
+  return result.length ? result : [start.slice(0, 10)];
+}
+
+export const uid = () => crypto.randomUUID();
+const requireValue = (condition, message) => { if (!condition) throw Error(message); };
+const clean = (value, max = 200) => String(value || '').trim().slice(0, max);
+
+function integerCents(value) {
+  requireValue(Number.isSafeInteger(value) && value >= 0 && value <= 100000000,
+    'Enter a valid amount in cents.');
+  return value;
+}
+
+export function currentRoom(booking) {
+  return booking?.segments?.at(-1)?.room || booking?.room || '';
+}
+
+export function total(booking) {
+  return booking.rates.reduce((sum, rate) => sum + rate.amount, 0)
+    + (booking.fees || 0)
+    + (booking.adjustments || []).reduce((sum, adjustment) => sum + adjustment.amount, 0);
+}
+
+export function ledger(db, bookingId) {
+  const transactions = db.transactions.filter((transaction) => (
+    transaction.booking === bookingId && !transaction.void
+  ));
+  const sum = (kind) => transactions
+    .filter((transaction) => transaction.kind === kind)
+    .reduce((value, transaction) => value + transaction.amount, 0);
+  return {
+    paid: sum('payment') - sum('refund'),
+    deposit: sum('deposit') - sum('deposit-return') - sum('deposit-retained'),
+    refunded: sum('refund'),
+  };
+}
+
+export const balance = (db, booking) => total(booking) - ledger(db, booking.id).paid;
+export const guest = (db, booking) => db.guests.find((person) => person.id === booking.guest);
+
+function overlaps(firstStart, firstEnd, secondStart, secondEnd) {
+  return firstStart < secondEnd && secondStart < firstEnd;
+}
+
+function bookingSegments(booking) {
+  if (booking.segments?.length) {
+    return booking.segments.map((segment) => [
+      segment.room,
+      segment.start,
+      segment.end || booking.end,
+    ]);
+  }
+  return [[booking.room, booking.start, booking.end]];
+}
+
+// Rooms are created by typing a room number at check-in. There is no inventory
+// list to maintain; a number is unavailable only when an active stay occupies it.
+export function roomAvailable(db, roomNumber, start, end, excludeId = '') {
+  const room = clean(roomNumber, 40);
+  if (!room || !validDate(start) || !validDate(end) || end <= start) return false;
+  return !db.bookings.some((booking) => {
+    if (booking.id === excludeId || !['reserved', 'in-house'].includes(booking.status)) return false;
+    return bookingSegments(booking).some(([segmentRoom, segmentStart, segmentEnd]) => (
+      segmentRoom === room && overlaps(start, end, segmentStart, segmentEnd)
+    ));
+  });
+}
+
+export const typeAvailable = () => true;
+
+export function category(db, booking, at = nowLocal()) {
+  if (booking.status !== 'in-house') return booking.status;
+  if (booking.end.slice(0, 10) <= at.slice(0, 10)) return 'departures';
+  const incurred = booking.rates
+    .filter((rate) => rate.date <= at.slice(0, 10))
+    .reduce((sum, rate) => sum + rate.amount, 0) + (booking.fees || 0);
+  return ledger(db, booking.id).paid >= Math.min(total(booking), incurred)
+    ? 'stayovers'
+    : 'payment-due';
+}
+
+export function cashSummary(db, from, to = from) {
+  const transactions = db.transactions.filter((transaction) => (
+    !transaction.void
+    && transaction.at.slice(0, 10) >= from
+    && transaction.at.slice(0, 10) <= to
+  ));
+  const sum = (kind) => transactions
+    .filter((transaction) => transaction.kind === kind)
+    .reduce((value, transaction) => value + transaction.amount, 0);
+  const room = sum('payment');
+  const deposits = sum('deposit');
+  const returned = sum('refund') + sum('deposit-return');
+  return { room, deposits, gross: room + deposits, returned, net: room + deposits - returned, transactions };
+}
+
+function validateRates(rates, start, end) {
+  const dates = nights(start, end);
+  requireValue(Array.isArray(rates) && rates.length === dates.length, 'Enter a price for every night.');
+  return dates.map((date, index) => {
+    requireValue(rates[index]?.date === date, 'Nightly dates do not match the stay.');
+    return { date, amount: integerCents(rates[index].amount) };
+  });
+}
+
+function transaction(db, booking, kind, amount, user, at, note = '', original = '') {
+  if (!amount) return;
+  db.transactions.push({
+    id: uid(), booking: booking.id, room: currentRoom(booking), kind,
+    amount: integerCents(amount), user, at, note: clean(note, 1000), original, void: false,
+  });
+}
+
+function audit(db, user, action, booking, at, detail) {
+  db.activity.push({ id: uid(), user, action, booking, at, detail: clean(detail, 2000) });
+}
+
+export function applyCommand(state, actor, command, payload = {}, at = nowLocal()) {
+  const db = structuredClone(state);
+  requireValue(db.staff.some((staff) => staff.id === actor && staff.active), 'Sign in with the Boss account.');
+  let booking = payload.id ? db.bookings.find((item) => item.id === payload.id) : null;
+  let detail = '';
+
+  if (command === 'create') {
+    requireValue(['in-house', 'reserved'].includes(payload.status), 'Choose an active stay or future reservation.');
+    requireValue(clean(payload.name), 'Guest name is required.');
+    requireValue(clean(payload.idNumber), 'ID number is required.');
+    requireValue(clean(payload.room, 40), 'Room number is required.');
+    requireValue(validDate(payload.start) && validDate(payload.end), 'Enter valid check-in and checkout dates.');
+    requireValue(payload.end > payload.start, 'Checkout must be after check-in.');
+    requireValue(roomAvailable(db, payload.room, payload.start, payload.end), 'That room is already occupied for these dates.');
+    const rates = validateRates(payload.rates, payload.start, payload.end);
+    const person = {
+      id: uid(), name: clean(payload.name), idType: clean(payload.idType),
+      idNumber: clean(payload.idNumber), phone: clean(payload.phone), address: clean(payload.address),
+    };
+    booking = {
+      id: uid(), reference: `MD-${String(db.bookings.length + 1001)}`, guest: person.id,
+      guestSnapshot: structuredClone(person), type: 'room', room: clean(payload.room, 40),
+      start: payload.start, end: payload.end, actualIn: payload.start, actualOut: null,
+      status: payload.status, rates, fees: integerCents(payload.fees || 0), adjustments: [],
+      notes: clean(payload.notes, 2000), createdBy: actor, assignedBy: actor,
+      segments: [{ room: clean(payload.room, 40), start: payload.start, end: null }],
+    };
+    db.guests.push(person);
+    db.bookings.push(booking);
+    transaction(db, booking, 'payment', payload.paid || 0, actor, at);
+    transaction(db, booking, 'deposit', payload.deposit || 0, actor, at);
+    detail = `${booking.reference} · Room ${booking.room}`;
+  } else {
+    requireValue(booking, 'Stay not found.');
+    if (command === 'check-in') {
+      requireValue(booking.status === 'reserved', 'Only a future reservation can be checked in.');
+      booking.status = 'in-house';
+      booking.actualIn = at;
+      detail = `Checked in to Room ${currentRoom(booking)}`;
+    } else if (command === 'cancel') {
+      requireValue(booking.status === 'reserved', 'Only a future reservation can be cancelled.');
+      booking.status = 'cancelled';
+      detail = 'Reservation cancelled.';
+    } else if (command === 'collect') {
+      requireValue(['payment', 'deposit', 'refund', 'deposit-return', 'deposit-retained'].includes(payload.kind), 'Invalid cash entry.');
+      requireValue(payload.amount > 0, 'Amount must be greater than zero.');
+      integerCents(payload.amount);
+      if (['deposit-return', 'deposit-retained'].includes(payload.kind)) {
+        requireValue(payload.amount <= ledger(db, booking.id).deposit, 'Amount exceeds the deposit held.');
+      }
+      if (payload.kind === 'refund') requireValue(payload.amount <= ledger(db, booking.id).paid, 'Refund exceeds room cash received.');
+      if (['refund', 'deposit-return', 'deposit-retained'].includes(payload.kind)) requireValue(clean(payload.note), 'Enter a reason.');
+      transaction(db, booking, payload.kind, payload.amount, actor, at, payload.note, payload.original || '');
+      detail = `${payload.kind}: ${(payload.amount / 100).toFixed(2)} · ${payload.note || ''}`;
+    } else if (command === 'transfer') {
+      requireValue(booking.status === 'in-house', 'Only an active stay can change rooms.');
+      requireValue(clean(payload.room, 40) && clean(payload.room, 40) !== currentRoom(booking), 'Enter a different room number.');
+      requireValue(clean(payload.reason), 'Enter the transfer reason.');
+      requireValue(roomAvailable(db, payload.room, at, booking.end, booking.id), 'That room is already occupied.');
+      const oldRoom = currentRoom(booking);
+      booking.segments.at(-1).end = at;
+      booking.segments.push({ room: clean(payload.room, 40), start: at, end: null });
+      booking.room = clean(payload.room, 40);
+      detail = `${oldRoom} → ${booking.room} · ${payload.reason}`;
+    } else if (command === 'extend') {
+      requireValue(booking.status === 'in-house', 'This stay is closed.');
+      requireValue(payload.end > booking.end, 'New checkout must be later than the current checkout.');
+      requireValue(roomAvailable(db, currentRoom(booking), booking.start, payload.end, booking.id), 'That room is reserved during the extension.');
+      const nextRates = validateRates(payload.rates, booking.start, payload.end);
+      for (const oldRate of booking.rates) {
+        requireValue(nextRates.find((rate) => rate.date === oldRate.date)?.amount === oldRate.amount, 'Existing nightly rates must be preserved.');
+      }
+      booking.end = payload.end;
+      booking.rates = nextRates;
+      transaction(db, booking, 'payment', payload.paid || 0, actor, at);
+      detail = `Checkout extended to ${payload.end}`;
+    } else if (command === 'checkout') {
+      requireValue(booking.status === 'in-house', 'Guest is not checked in.');
+      requireValue(balance(db, booking) <= 0 || payload.ackBalance, 'Acknowledge the outstanding balance before checkout.');
+      requireValue(ledger(db, booking.id).deposit === 0 || payload.ackDeposit, 'Resolve or acknowledge the held deposit before checkout.');
+      booking.status = 'checked-out';
+      booking.actualOut = at;
+      booking.segments.at(-1).end = at;
+      detail = 'Actual checkout recorded.';
+    } else if (command === 'rates') {
+      requireValue(clean(payload.reason), 'Enter the reason for changing prices.');
+      const nextRates = validateRates(payload.rates, booking.start, booking.end);
+      detail = `Nightly rates changed. ${payload.reason}`;
+      booking.rates = nextRates;
+    } else if (command === 'adjust') {
+      requireValue(clean(payload.reason), 'Enter an adjustment reason.');
+      requireValue(Number.isSafeInteger(payload.amount) && Math.abs(payload.amount) <= 100000000, 'Enter a valid adjustment.');
+      requireValue(total(booking) + payload.amount >= 0, 'Charges cannot be negative.');
+      booking.adjustments.push({ id: uid(), amount: payload.amount, reason: clean(payload.reason), user: actor, at });
+      detail = `Charge adjustment ${(payload.amount / 100).toFixed(2)}: ${payload.reason}`;
+    } else if (command === 'void') {
+      const entry = db.transactions.find((item) => item.id === payload.transaction && item.booking === booking.id && !item.void);
+      requireValue(entry, 'Select an active cash entry.');
+      requireValue(clean(payload.reason), 'Enter a correction reason.');
+      entry.void = true;
+      entry.voidedBy = actor;
+      entry.voidedAt = at;
+      entry.voidReason = clean(payload.reason);
+      requireValue(ledger(db, booking.id).paid >= 0 && ledger(db, booking.id).deposit >= 0, 'Correct related returns first.');
+      detail = `Voided ${entry.kind} ${(entry.amount / 100).toFixed(2)}: ${payload.reason}`;
+    } else if (command === 'note') {
+      requireValue(clean(payload.note), 'Enter a note.');
+      booking.notes += `${booking.notes ? '\n' : ''}${clean(payload.note, 2000)}`;
+      detail = payload.note;
+    } else {
+      throw Error('Unknown action.');
+    }
+  }
+
+  audit(db, actor, command, booking?.id || '', at, detail);
+  db.revision = (db.revision || 0) + 1;
+  return { db, id: booking?.id };
+}
+
+export function seed() {
+  return {
+    version: 2,
+    revision: 0,
+    rooms: [],
+    staff: [{ id: 'boss', name: 'Boss', username: 'boss', active: true }],
+    guests: [],
+    bookings: [],
+    transactions: [],
+    activity: [],
+  };
+}

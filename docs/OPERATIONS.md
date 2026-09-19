@@ -1,45 +1,39 @@
 # Operating Staydesk
 
-## Current delivery status
-
-This is an initial implementation for review and a controlled pilot, not a claim of a completed production security audit. GitHub Pages serves the local-only fictional-data demo. The server needs separate hosting before staff can share real data securely.
+Staydesk is a compact motel register for a controlled pilot. The GitHub Pages build is a fictional-data browser demo. The Node build is the shared version for a real motel and needs a persistent filesystem, HTTPS, and a backup plan.
 
 ## Hosting the server
 
-Use a Node 24+ host that supports a persistent filesystem and a single running instance. Put the SQLite file on a persistent volume, outside the static web directory. Do not deploy the SQLite file to an ephemeral serverless filesystem. The app intentionally uses one database transaction and an expected revision on each mutation to reject stale concurrent writes. Staff get a conflict message and must review the latest state before retrying.
+Use a Node 24+ host with persistent storage. Keep the SQLite database outside the static web directory. Run one application instance, use an HTTPS reverse proxy, and set `APP_ORIGIN` to the exact public HTTPS origin. The server uses an HttpOnly, SameSite=Strict session cookie, validates POST origins, and checks an expected revision on every mutation so a stale tab cannot silently overwrite a newer save.
 
-Use an HTTPS reverse proxy and set APP_ORIGIN to the exact HTTPS hostname. The server uses an HttpOnly, SameSite=Strict cookie and adds Secure in HTTPS mode. It checks POST Origin and a custom request header to protect against cross-site requests. It does not trust a client-supplied staff ID for cash attribution.
-
-No public self-registration exists. Every active staff member has the same full access and can create accounts, deactivate others and reset passwords. This is the requested equal-privilege model; operate it only with trusted staff. Deactivation and password reset revoke existing sessions. Sessions expire after eight hours.
+Only one account is enabled: the Boss account. Do not share the password. This is a single-owner model with no role or staff picker; cash entries are attributed to the signed-in Boss account. Sessions expire after eight hours.
 
 ## Initial configuration
 
-The first database setup creates rooms 101–116: nine one-bed rooms and seven two-bed rooms, all marked ready. Before real use, replace this sample inventory with the actual rooms in the initializer or run a reviewed database migration before any guest records exist. Do not reset or overwrite an occupied production database. Timezone is America/Los_Angeles. Checkout form defaults to 11 AM, with per-stay changes allowed. Enter the correct tax/fee total in each booking; the app does not calculate jurisdiction-specific taxes.
+The first database setup creates one Boss account, an empty guest register, and no room inventory. Staff type a room number when a guest checks in. A room appears on the current room board only while a stay uses it, while all historical room segments remain searchable afterwards. The default timezone is `America/Los_Angeles`, and checkout defaults to 11:00.
+
+Set `MOTEL_INITIAL_USER`, `MOTEL_INITIAL_PASSWORD` (15–200 characters), and optionally `MOTEL_INITIAL_NAME` before the first launch. Remove the initial password from the host environment after initialization. Do not delete or recreate the SQLite file once real records exist.
 
 ## Cash interpretation
 
-Total received = room/reservation payments + security deposits received. Net collection subtracts actual room refunds and deposit returns. Retaining an already-held deposit does not create a cash inflow. Booking, checking in and changing rooms do not create a receipt by themselves. Unpaid bookings are not cash.
+Total collected for a day is room payments plus security deposits received on that day. Net cash subtracts room refunds and returned deposits. Retaining an already-held deposit does not create a new cash inflow. A cash entry keeps its stay, room, timestamp, type, and note. Totals are integer cents and are displayed to two decimal places.
 
-Staff totals track the employee who receives/returns the cash. Stay details separately show who booked/assigned the room. A later room transfer does not change the room recorded against an earlier receipt. A reservation advance without a room is shown against its reservation reference and bed type.
-
-No opening cash, petty cash expenses or bank deposits are tracked. The report is not a cash-drawer reconciliation or an accrual accounting revenue report.
+The home page shows the day’s total collected. The Cash page shows total collected, cash returned, net cash, and every entry for the selected date. This is a cash register report, not an accrual revenue report or a full drawer reconciliation; opening cash, expenses, and bank deposits are outside the current scope.
 
 ## Backups and recovery
 
-Schedule consistent SQLite backups using the hosting provider or SQLite backup API/VACUUM INTO. Do not copy only the live main .sqlite file while WAL writes may be outstanding. Keep encrypted backups off the application disk with access restricted to authorized staff. Choose retention and recovery targets before the pilot.
+Back up SQLite consistently while the app is running; use the host’s SQLite backup support or `VACUUM INTO` rather than copying only the main file while WAL writes may be outstanding. Store encrypted backups away from the application disk and restrict access. Test restoration on a separate instance before the pilot.
 
-A JSON export includes sensitive guest data and is useful for review, but is not a full restorable authentication/database backup. It deliberately omits password hashes and sessions. There is no JSON restore UI.
-
-Before launch, test restoration on a separate instance: stop that instance, restore a consistent SQLite backup, start with its own APP_ORIGIN, verify logins and guest histories, and reconcile cash totals with the source backup. Document the exact host-specific restore steps. Never test restoration by overwriting live data.
+The browser demo’s local storage is not a backup. The optional JSON export contains guest information but not password hashes or sessions and is not a complete database restore.
 
 ## Security and retention
 
-Use unique passphrases and individual accounts. Do not share usernames. Keep hosting secrets outside Git. Restrict filesystem access to the database. Monitor authentication failures and server availability. Apply Node/security updates through a tested release process. A guest-data retention/deletion process and encryption-at-rest configuration are still required before real ID storage.
+Use HTTPS, a strong unique Boss passphrase, restricted filesystem permissions, host secret storage, and current Node security updates. Decide how long guest IDs and cash history should be retained, how corrections are reviewed, and who may access backups before entering real data.
 
 ## Deployment and rollback
 
-Keep source in Git. Run npm test before each deploy. Back up the database before any schema/data migration. Deploy a tested source version; do not reset the database on deployment. Source rollback and data rollback are different actions. An older source version must be compatible with the existing database before rollback.
+Run `npm test` before every release. Back up the database before schema changes. Keep source and database rollback plans separate: an older source version must remain compatible with the current database before it is deployed.
 
-## Front-desk pilot checks
+## Pilot checks
 
-Use fictional data first. Test assigning a room, extending it, moving rooms, adding different nightly prices, recording a deposit, refunding cash, checking out, marking clean, finding history, and comparing staff totals. Involve two staff sessions to verify conflict handling. Compare a whole day's entries to the existing register before relying on this app. Retain a paper/manual fallback for internet or host outages.
+Use fictional records first. Test registering a guest, applying different nightly prices, recording a deposit, returning cash, moving rooms, extending a stay, checking out, creating a future reservation, checking it in, finding guest history, opening room history, and reconciling a full day of cash. Keep the existing paper/manual fallback available for an outage.

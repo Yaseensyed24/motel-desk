@@ -14,9 +14,9 @@ const passCheck=p=>typeof p==='string'&&p.length>=15&&p.length<=200;
 const getState=()=>JSON.parse(sql.prepare('SELECT body FROM state WHERE id=1').get().body);
 const saveState=db=>sql.prepare('UPDATE state SET body=? WHERE id=1').run(JSON.stringify(db));
 if(!sql.prepare('SELECT id FROM state WHERE id=1').get()){
- const user=process.env.MOTEL_INITIAL_USER||'user1',pass=process.env.MOTEL_INITIAL_PASSWORD;
+ const user=process.env.MOTEL_INITIAL_USER||'boss',pass=process.env.MOTEL_INITIAL_PASSWORD;
  if(!/^[a-z0-9._-]{3,40}$/.test(user)||!passCheck(pass))throw Error('For first launch, set MOTEL_INITIAL_USER and MOTEL_INITIAL_PASSWORD (15+ characters) through your host secret manager.');
- const db=seed();db.guests=[];db.bookings=[];db.transactions=[];db.activity=[];db.rooms.forEach(r=>r.status='ready');db.staff=[{id:uid(),username:user,name:process.env.MOTEL_INITIAL_NAME||'User 1',active:true}];const salt=randomBytes(32).toString('hex');
+ const db=seed();db.staff=[{id:uid(),username:user,name:process.env.MOTEL_INITIAL_NAME||'Boss',active:true}];const salt=randomBytes(32).toString('hex');
  sql.exec('BEGIN IMMEDIATE');try{sql.prepare('INSERT INTO users VALUES(?,?,?,?)').run(db.staff[0].id,user,salt,hash(pass,salt));sql.prepare('INSERT INTO state VALUES(1,?)').run(JSON.stringify(db));sql.exec('COMMIT');}catch(e){sql.exec('ROLLBACK');throw e;}
 }
 const digest=t=>createHash('sha256').update(t).digest('hex');
@@ -50,12 +50,10 @@ const server=http.createServer(async(req,res)=>{
    if(!passCheck(p.password))throw Error('Use a password with 15–200 characters.');if(!sql.prepare('SELECT id FROM users WHERE id=?').get(p.staffId))throw Error('Account not found.');
    const salt=randomBytes(32).toString('hex'),hashed=hash(p.password,salt);sql.exec('BEGIN IMMEDIATE');try{sql.prepare('UPDATE users SET salt=?,hash=? WHERE id=?').run(salt,hashed,p.staffId);sql.prepare('DELETE FROM sessions WHERE user=?').run(p.staffId);const db=getState();db.revision++;db.activity.push({id:uid(),user,action:'password-reset',booking:'',at:nowLocal(),detail:`Password reset for ${db.staff.find(s=>s.id===p.staffId).name}`});saveState(db);sql.exec('COMMIT');}catch(e){sql.exec('ROLLBACK');throw e;}return json(res,200,{ok:true});
   }
-  if((path==='/api/command'||path==='/api/staff')&&req.method==='POST'){
-   let credentials=null;if(path==='/api/staff'){if(!passCheck(p.password))throw Error('Use a password with 15–200 characters.');const salt=randomBytes(32).toString('hex');credentials={id:uid(),salt,hash:hash(p.password,salt)};}else if(['add-staff'].includes(p.command))throw Error('Use the staff-account form to create a secure account.');
+  if(path==='/api/command'&&req.method==='POST'){
+   if(['add-staff','staff-status'].includes(p.command))throw Error('Only the Boss account is enabled.');
    sql.exec('BEGIN IMMEDIATE');let r;try{const db=getState();if(p.revision!==db.revision)throw Object.assign(Error('Another staff member updated the register. Review the latest data and retry.'),{status:409});
-    r=credentials?applyCommand(db,user,'add-staff',{name:p.name,username:p.username,staffId:credentials.id}):applyCommand(db,user,p.command,p.payload);
-    if(credentials)sql.prepare('INSERT INTO users VALUES(?,?,?,?)').run(credentials.id,String(p.username).toLowerCase(),credentials.salt,credentials.hash);
-    if(p.command==='staff-status'&&!r.db.staff.find(s=>s.id===p.payload.staffId)?.active)sql.prepare('DELETE FROM sessions WHERE user=?').run(p.payload.staffId);
+    r=applyCommand(db,user,p.command,p.payload);
     saveState(r.db);sql.exec('COMMIT');}catch(e){sql.exec('ROLLBACK');throw e;}return json(res,200,{...r,user});
   }
   return json(res,404,{error:'Not found.'});
