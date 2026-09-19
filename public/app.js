@@ -1,7 +1,7 @@
 import {
   seed, applyCommand, today, nowLocal, plusDay, nights, total, balance,
   ledger, guest, currentRoom, cashSummary, category,
-} from './domain.js';
+} from './domain.js?v=d30380d';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
