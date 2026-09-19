@@ -1,0 +1,1 @@
+{"name":"motel-desk","version":"1.0.0","private":true,"type":"module","scripts":{"start":"node server.mjs","test":"node --test tests/*.test.mjs","demo":"python3 -m http.server 4173 --directory public"},"engines":{"node":">=24"}}

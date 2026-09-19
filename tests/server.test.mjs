@@ -1,0 +1,15 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {spawn} from 'node:child_process';import {mkdtemp,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';
+test('server enforces login, password rules, staff attribution, conflicts and persistence',async()=>{const dir=await mkdtemp(join(tmpdir(),'staydesk-test-')),port=19437,base=`http://localhost:${port}`,password='Fictional test password 123';const child=spawn(process.execPath,['server.mjs'],{cwd:new URL('..',import.meta.url),env:{...process.env,PORT:String(port),MOTEL_DB:join(dir,'test.sqlite'),MOTEL_INITIAL_USER:'user1',MOTEL_INITIAL_PASSWORD:password},stdio:['ignore','pipe','pipe']});let stderr='';child.stderr.on('data',d=>stderr+=d);try{await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(Error('Server startup timeout '+stderr)),8000);child.stdout.on('data',()=>{clearTimeout(t);resolve();});child.once('exit',code=>{clearTimeout(t);reject(Error('Server exit '+code+stderr));});});
+const get=()=>fetch(base+'/api/state');assert.equal((await get()).status,401);
+const post=(path,body,cookie='',orig=base)=>fetch(base+'/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Staydesk-Request':'1','Origin':orig,'Cookie':cookie},body:JSON.stringify(body)});
+assert.equal((await post('login',{username:'user1',password:'bad'})).status,401);
+assert.equal((await post('login',{username:'user1',password},'','https://evil.example')).status,403);
+const login=await post('login',{username:'user1',password});assert.equal(login.status,200);const cookie=login.headers.get('set-cookie').split(';')[0];assert.match(login.headers.get('set-cookie'),/HttpOnly/);
+const st=await(await fetch(base+'/api/state',{headers:{Cookie:cookie}})).json();assert.equal(st.db.staff.length,1);
+assert.equal((await post('staff',{username:'user2',name:'User 2',password:'short',revision:st.db.revision},cookie)).status,400);
+const add=await post('staff',{username:'user2',name:'User 2',password:'Another fictional test password',revision:st.db.revision},cookie);assert.equal(add.status,200);const j=await add.json();assert.equal(j.db.staff.length,2);assert.equal(JSON.stringify(j).includes(password),false);
+assert.equal((await post('command',{command:'room-status',payload:{room:'101',status:'dirty'},revision:st.db.revision},cookie)).status,409);
+const change=await post('command',{command:'room-status',payload:{room:'101',status:'dirty'},revision:j.db.revision},cookie);assert.equal(change.status,200);const after=await change.json();assert.equal(after.db.activity.at(-1).user,st.user);
+const staffLogin=await post('login',{username:'user2',password:'Another fictional test password'});assert.equal(staffLogin.status,200);
+await post('logout',{},cookie);assert.equal((await fetch(base+'/api/state',{headers:{Cookie:cookie}})).status,401);
+}finally{child.kill('SIGTERM');await new Promise(r=>child.once('exit',r));await rm(dir,{recursive:true,force:true});}});
